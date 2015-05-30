@@ -6,7 +6,7 @@
 #include <sstream>
 #include <functional>
 
-static bool gTrace = true;
+static bool gTrace = false;
 
 template<typename T>
 struct Maybe
@@ -784,18 +784,21 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			else
 			{
 				eval(car(item), context, [item, k, context](Item proc){
-					assert(proc.mTag == eProc);
-					if (proc.mProc.mNative)
+					if ( proc.mTag != eProc )
+					{
+						puts("&did-not-eval-to-proc\n");
+					}
+					else if (proc.mProc.mNative)
 					{
 						(proc.mProc.mNative)(Item(cdr(item).mCell), context, k);
 					}
 					else
 					{
 						Cell* params = car(Item(proc.mProc.mProc)).mCell;
-						Cell* body = car(cdr(Item(proc.mProc.mProc))).mCell;
+						auto body = car(cdr(Item(proc.mProc.mProc)));
 						mapeval(cdr(item), context, [params, proc, body, k](Item arglist){
 							auto newContext = new Context(params, arglist.mCell, proc.mProc.mClosure);
-							eval(Item(body), newContext, k);
+							eval(body, newContext, k);
 						});
 					}
 				});
@@ -908,9 +911,6 @@ void test_list()
 	assert( length(parseList("( Maddy loves ( horses and unicorns) )", &rest).mV.mCell) == 3);
 	assert(length(parseList("( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV.mCell) == 3);
 	assert(!parseList("( Maddy loves ", &rest).mValid);
-
-	//auto item = parseForm("( first . second )", &rest).mV;
-	//printf("%s\n", print(item).c_str());
 }
 
 void test_quote()
