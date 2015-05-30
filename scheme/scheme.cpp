@@ -5,7 +5,7 @@
 #include <assert.h>
 #include <sstream>
 
-static bool gTrace = true;
+static bool gTrace = false;
 
 template<typename T>
 struct Maybe
