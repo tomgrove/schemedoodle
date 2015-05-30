@@ -7,6 +7,7 @@
 #include <functional>
 
 static bool gTrace = false;
+static bool gVerboseGC = true;
 
 template<typename T>
 struct Maybe
@@ -129,8 +130,10 @@ struct Item {
 static std::string print(Item item);
 
 struct Cell {
+	Cell*		mNext;
 	Item		mCar;
 	Item		mCdr;
+	bool		mReachable;
 	Cell() 
 		: mCdr()
 		, mCar()
@@ -153,7 +156,9 @@ void eval(Item item, Context* context, std::function<void(Item)> k);
 struct Context {
 	std::map< uint32_t, Item >	mBindings;
 	Context*					mOuter;
-	
+	Context*					mNext;
+	bool						mReachable;
+
 	Context()
 		: mOuter(nullptr)
 		, mBindings()
@@ -205,29 +210,32 @@ const static uint32_t cMaxCells = 1000000;
 const static uint32_t cMaxContexts = 1000;
 
 static Cell*	   gCellFreeList;
+static Cell*	   gCellAllocList;
+
 static Context	   gRootContext;
 static Context*	   gContextFreeList;
+static Context*	   gContextAllocList;
 
 void allocFreeLists()
 {
 	gCellFreeList = new Cell[ cMaxCells ];
 	gContextFreeList = new Context[ cMaxContexts ];
+	gCellAllocList = nullptr;
+	gContextAllocList = &gRootContext;
 
 	for (uint32_t i = 0; i < cMaxCells - 1; i++)
 	{
-		gCellFreeList[i].mCdr.mTag = eCell;
-		gCellFreeList[i].mCdr.mCell = &gCellFreeList[i + 1];
+		gCellFreeList[i].mNext = &gCellFreeList[i + 1];
 	}
 
-	gCellFreeList[cMaxCells - 1].mCdr.mTag = eCell;
-	gCellFreeList[cMaxCells - 1].mCdr.mCell = nullptr;
+	gCellFreeList[cMaxCells - 1].mNext = nullptr;
 
 	for (uint32_t i = 0; i < cMaxContexts - 1; i++)
 	{
-		gContextFreeList[i].mOuter = &gContextFreeList[i + 1];
+		gContextFreeList[i].mNext = &gContextFreeList[i + 1];
 	}
 
-	gContextFreeList[cMaxContexts - 1].mOuter = nullptr;
+	gContextFreeList[cMaxContexts - 1].mNext = nullptr;
 }
 
 Context* allocContext(Cell* variables, Cell* params, Context* outer)
@@ -238,8 +246,10 @@ Context* allocContext(Cell* variables, Cell* params, Context* outer)
 		return nullptr;
 	}
 	
-	auto context = gContextFreeList;
-	gContextFreeList = context->mOuter;
+	auto context		= gContextFreeList;
+	gContextFreeList	= context->mNext;
+	context->mNext		= gContextAllocList;
+	gContextAllocList	= context;
 	return new (context)Context(variables, params, outer);
 }
 
@@ -252,10 +262,147 @@ Cell* allocCell( Item car, Item cdr = Item((Cell*)nullptr))
 	}
 
 	auto cell = gCellFreeList;
-	gCellFreeList = cell->mCdr.mCell;
+	gCellFreeList = cell->mNext;
+	cell->mNext = gCellAllocList;
+	gCellAllocList = cell;
 
 	return new (cell)Cell(car, cdr);
 }
+
+void freeCell(Cell* cell)
+{
+	cell->mNext = gCellFreeList;
+	gCellFreeList = cell;
+}
+
+void markCell(Cell* cell)
+{
+	if (cell->mReachable)
+	{
+		return;
+	}
+
+	cell->mReachable = true;
+	if (cell->mCar.mTag == eCell && cell->mCar.mCell)
+	{
+		markCell(cell->mCar.mCell);
+	}
+
+	if (cell->mCdr.mTag == eCell && cell->mCdr.mCell )
+	{
+		markCell(cell->mCdr.mCell);
+	}
+}
+
+void markContext(Context* context)
+{
+	if (context->mReachable)
+	{
+		return;
+	}
+
+	context->mReachable = true;
+
+	for (auto pair : context->mBindings)
+	{
+		if (gVerboseGC)
+		{
+			printf("(%x) marking %s\n", context, gSymbolTable.GetString(pair.first).c_str());
+		}
+		if (pair.second.mTag == eCell)
+		{
+			markCell(pair.second.mCell);
+		}
+		else if (pair.second.mTag == eProc)
+		{
+			if (pair.second.mProc.mClosure)
+			{
+				markContext(pair.second.mProc.mClosure);
+			}
+		}
+	}
+
+	if (context->mOuter)
+	{
+		markContext(context->mOuter);
+	}
+}
+
+void gc( Context* context )
+{
+	uint32_t count = 0;
+	Cell* i = gCellAllocList;
+	while (i)
+	{
+		i->mReachable = false;
+		i = i->mNext;
+		count++;
+	}
+
+	uint32_t ccount = 0;
+	Context* j = gContextAllocList;
+	while (j)
+	{
+		j->mReachable = false;
+		j = j->mNext;
+		ccount++;
+	}
+
+	if (gVerboseGC)
+	{
+		printf("considering %d cells and %d contexts during GC\n", count, ccount);
+	}
+
+	markContext(context);
+
+	i = gCellAllocList;
+	Cell* prev = nullptr;
+	count = 0;
+	while (i)
+	{
+		Cell* next = i->mNext;
+		if (!i->mReachable)
+		{
+			if (!prev)
+			{
+				gCellAllocList = i->mNext;
+			}
+			else
+			{
+				prev->mNext = i->mNext;
+			}
+
+			freeCell(i);
+			count++;
+		}
+		else
+		{
+			prev = i;
+		}
+
+		i = next;
+	}
+
+	if (gVerboseGC)
+	{
+		printf("return %d cells to the free list\n",count);
+	}
+
+	uint32_t livecc = 0;
+	j = gContextAllocList;
+	while (j)
+	{
+		if (j->mReachable)
+		{
+			livecc++;
+		}
+		j = j->mNext;
+	}
+
+	printf("%d live contexts\n", livecc);
+
+}
+
 
 bool isSign(char c)
 {
@@ -901,6 +1048,8 @@ void repl()
 		{
 			puts("parse error\n");
 		}
+
+		gc(&gRootContext);
 	}
 }
 
