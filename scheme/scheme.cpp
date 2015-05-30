@@ -690,7 +690,7 @@ void compare(Item pair, Context* context, std::function<void(Item)> k)
 	});
 }
 
-void evalargs(Item in, Context* context, std::function<void(Item)> k )
+void mapeval(Item in, Context* context, std::function<void(Item)> k )
 {
 	if ( in.mCell == nullptr)
 	{
@@ -699,7 +699,7 @@ void evalargs(Item in, Context* context, std::function<void(Item)> k )
 	else
 	{
 		eval(in.mCell->mCar, context, [in, context,k](Item result){
-			evalargs(in.mCell->mCdr, context, [result,k](Item rest){
+			mapeval(in.mCell->mCdr, context, [result,k](Item rest){
 				k(Item(new Cell(result, rest)));
 			});
 		});
@@ -710,7 +710,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 {
 	if (gTrace)
 	{
-		printf("%s\n", print(item).c_str());
+		printf("eval: %s\n", print(item).c_str());
 	}
 	switch (item.mTag)
 	{
@@ -726,78 +726,80 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 		{
 			k(item);
 		}
-
-		uint32_t symbol = car(item).mSymbol;
-		if (symbol == gSymbolTable.GetSymbol("quote"))
-		{
-			k(car(cdr(item)));
-		}
-		else if (symbol == gSymbolTable.GetSymbol("define"))
-		{
-			Item value, name, params;
-			params = car(cdr(item));
-			if (params.mTag == eSymbol)
-			{
-				name = car(cdr(item));
-				if (length(item.mCell) == 3)
-				{
-					eval(car(cdr(cdr(item))), context, [name, context, k](Item value){ context->Set(name.mSymbol, value); k(value); });
-				}
-			}
-			else if (params.mTag == eCell)
-			{
-				name = car(params);
-				auto arglist = cdr(params);
-				auto body = car(cdr(cdr(item)));
-
-				value = Item(new Cell(arglist, Item(new Cell(body))), context);
-				context->Set(name.mSymbol, value);
-				k(value);
-			}
-		}
-		else if (symbol == gSymbolTable.GetSymbol("set!"))
-		{
-			eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ context->Set(car(cdr(item)).mSymbol, v); k(v); });
-		}
-		else if (symbol == gSymbolTable.GetSymbol("if"))
-		{
-			eval(car(cdr(item)), context, [item, context, k](Item b){
-				if (b.mNumber)
-				{
-					eval(car(cdr(cdr(item))), context, k);
-				}
-				else if (length(item.mCell) > 3)
-				{
-					eval(car(cdr(cdr(cdr(item)))), context, k);
-				}
-				else
-				{
-					k(gUnspecified);
-				}
-			});
-		}
-		else if (symbol == gSymbolTable.GetSymbol("lambda"))
-		{
-			k(Item(cdr(item).mCell, context));
-		}
 		else
 		{
-			eval(car(item), context, [item, k, context](Item proc){
-				assert(proc.mTag == eProc);
-				if (proc.mProc.mNative)
+			uint32_t symbol = car(item).mSymbol;
+			if (symbol == gSymbolTable.GetSymbol("quote"))
+			{
+				k(car(cdr(item)));
+			}
+			else if (symbol == gSymbolTable.GetSymbol("define"))
+			{
+				Item value, name, params;
+				params = car(cdr(item));
+				if (params.mTag == eSymbol)
 				{
-					(proc.mProc.mNative)(Item(cdr(item).mCell), context, k);
+					name = car(cdr(item));
+					if (length(item.mCell) == 3)
+					{
+						eval(car(cdr(cdr(item))), context, [name, context, k](Item value){ context->Set(name.mSymbol, value); k(value); });
+					}
 				}
-				else
+				else if (params.mTag == eCell)
 				{
-					Cell* params = car(Item(proc.mProc.mProc)).mCell;
-					Cell* body = car(cdr(Item(proc.mProc.mProc))).mCell;
-					evalargs(cdr(item), context, [params,proc,body,k](Item arglist){
-						auto newContext = new Context(params, arglist.mCell, proc.mProc.mClosure);
-						eval(Item(body), newContext, k);
-					});
+					name = car(params);
+					auto arglist = cdr(params);
+					auto body = car(cdr(cdr(item)));
+
+					value = Item(new Cell(arglist, Item(new Cell(body))), context);
+					context->Set(name.mSymbol, value);
+					k(value);
 				}
-			});
+			}
+			else if (symbol == gSymbolTable.GetSymbol("set!"))
+			{
+				eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ context->Set(car(cdr(item)).mSymbol, v); k(v); });
+			}
+			else if (symbol == gSymbolTable.GetSymbol("if"))
+			{
+				eval(car(cdr(item)), context, [item, context, k](Item b){
+					if (b.mNumber)
+					{
+						eval(car(cdr(cdr(item))), context, k);
+					}
+					else if (length(item.mCell) > 3)
+					{
+						eval(car(cdr(cdr(cdr(item)))), context, k);
+					}
+					else
+					{
+						k(gUnspecified);
+					}
+				});
+			}
+			else if (symbol == gSymbolTable.GetSymbol("lambda"))
+			{
+				k(Item(cdr(item).mCell, context));
+			}
+			else
+			{
+				eval(car(item), context, [item, k, context](Item proc){
+					assert(proc.mTag == eProc);
+					if (proc.mProc.mNative)
+					{
+						(proc.mProc.mNative)(Item(cdr(item).mCell), context, k);
+					}
+					else
+					{
+						Cell* params = car(Item(proc.mProc.mProc)).mCell;
+						Cell* body = car(cdr(Item(proc.mProc.mProc))).mCell;
+						mapeval(cdr(item), context, [params, proc, body, k](Item arglist){
+							auto newContext = new Context(params, arglist.mCell, proc.mProc.mClosure);
+							eval(Item(body), newContext, k);
+						});
+					}
+				});
+			}
 		}
 	}
 	break;
@@ -955,6 +957,10 @@ void test_eval()
 	evals_to_symbol("(if 0 'true 'false)", "false");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 1)", "true");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 0)", "false");
+
+	char* rest;
+	auto list = parseForm("('a 'b (+ 1 2))", &rest).mV;
+	mapeval(list, &gRootContext, [](Item item){ puts(print(item).c_str()); });
 }
 
 void test_context()
