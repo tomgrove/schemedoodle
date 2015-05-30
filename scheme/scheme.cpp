@@ -201,7 +201,61 @@ struct Context {
 	}
 };
 
+const static uint32_t cMaxCells = 1000000;
+const static uint32_t cMaxContexts = 1000;
+
+static Cell*	   gCellFreeList;
 static Context	   gRootContext;
+static Context*	   gContextFreeList;
+
+void allocFreeLists()
+{
+	gCellFreeList = new Cell[ cMaxCells ];
+	gContextFreeList = new Context[ cMaxContexts ];
+
+	for (uint32_t i = 0; i < cMaxCells - 1; i++)
+	{
+		gCellFreeList[i].mCdr.mTag = eCell;
+		gCellFreeList[i].mCdr.mCell = &gCellFreeList[i + 1];
+	}
+
+	gCellFreeList[cMaxCells - 1].mCdr.mTag = eCell;
+	gCellFreeList[cMaxCells - 1].mCdr.mCell = nullptr;
+
+	for (uint32_t i = 0; i < cMaxContexts - 1; i++)
+	{
+		gContextFreeList[i].mOuter = &gContextFreeList[i + 1];
+	}
+
+	gContextFreeList[cMaxContexts - 1].mOuter = nullptr;
+}
+
+Context* allocContext(Cell* variables, Cell* params, Context* outer)
+{
+	if (gContextFreeList == nullptr)
+	{
+		// gc
+		return nullptr;
+	}
+	
+	auto context = gContextFreeList;
+	gContextFreeList = context->mOuter;
+	return new (context)Context(variables, params, outer);
+}
+
+Cell* allocCell( Item car, Item cdr = Item((Cell*)nullptr))
+{
+	if (gCellFreeList == nullptr)
+	{
+		// gc
+		return nullptr;
+	}
+
+	auto cell = gCellFreeList;
+	gCellFreeList = cell->mCdr.mCell;
+
+	return new (cell)Cell(car, cdr);
+}
 
 bool isSign(char c)
 {
@@ -347,7 +401,7 @@ Maybe<Item> parseQuotedForm(char*cs, char** rest)
 	Maybe<Item> item;
 	if ((item = parseForm(cs, rest)).mValid)
 	{
-		Cell* qcell = new Cell( Item("quote"), Item(new Cell( item.mV , Item((Cell*)nullptr) ) ));
+		Cell* qcell = allocCell( Item("quote"), Item( allocCell( item.mV ) ));
 		return Maybe<Item>(Item(qcell));
 	}
 
@@ -394,7 +448,7 @@ Maybe<Cell*> parseForms(char* cs, char** rest)
 	Cell* cell = nullptr;
 	if ((item = parseForm(cs, rest)).mValid)
 	{
-		cell = new Cell();
+		cell = allocCell(Item());
 		cell->mCar = item.mV;
 	}
 	else
@@ -502,7 +556,7 @@ Maybe<Item> parsePair(char* cs, char** rest)
 					if (*cs == ')')
 					{
 						cs++;
-						Cell* pair = new Cell(first.mV, second.mV);
+						Cell* pair = allocCell(first.mV, second.mV);
 						*rest = cs;
 						return Maybe<Item>( Item(pair) );
 					}
@@ -593,7 +647,7 @@ void cons(Item pair, Context* context, std::function<void(Item)> k )
 {
 	eval(car(pair), context, [context, pair, k](Item first){
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			k(Item(new Cell(first, second)));
+			k(Item( allocCell(first, second)));
 		}); });
 }
 
@@ -700,7 +754,7 @@ void mapeval(Item in, Context* context, std::function<void(Item)> k )
 	{
 		eval(in.mCell->mCar, context, [in, context,k](Item result){
 			mapeval(in.mCell->mCdr, context, [result,k](Item rest){
-				k(Item(new Cell(result, rest)));
+				k(Item( allocCell(result, rest)));
 			});
 		});
 	}
@@ -751,7 +805,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 					auto arglist = cdr(params);
 					auto body = car(cdr(cdr(item)));
 
-					value = Item(new Cell(arglist, Item(new Cell(body))), context);
+					value = Item( allocCell(arglist, Item( allocCell(body))), context);
 					context->Set(name.mSymbol, value);
 					k(value);
 				}
@@ -997,6 +1051,7 @@ void test_context()
 
 int main(int argc, char* argv[])
 {
+	allocFreeLists();
 	addNativeFns();
 
 	test_numbers();
