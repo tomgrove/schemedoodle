@@ -851,7 +851,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 						Cell* params = car(Item(proc.mProc.mProc)).mCell;
 						auto body = car(cdr(Item(proc.mProc.mProc)));
 						mapeval(cdr(item), context, [params, proc, body, k](Item arglist){
-							auto newContext = new Context(params, arglist.mCell, proc.mProc.mClosure);
+							auto newContext = allocContext(params, arglist.mCell, proc.mProc.mClosure);
 							eval(body, newContext, k);
 						});
 					}
