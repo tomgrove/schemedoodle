@@ -309,12 +309,16 @@ void markContext(Context* context)
 		{
 			printf("(%x) marking %s\n", context, gSymbolTable.GetString(pair.first).c_str());
 		}
-		if (pair.second.mTag == eCell)
+		if (pair.second.mTag == eCell && pair.second.mCell )
 		{
 			markCell(pair.second.mCell);
 		}
 		else if (pair.second.mTag == eProc)
 		{
+			if (!pair.second.mProc.mNative)
+			{
+				markCell(pair.second.mProc.mProc);
+			}
 			if (pair.second.mProc.mClosure)
 			{
 				markContext(pair.second.mProc.mClosure);
