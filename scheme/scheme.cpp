@@ -4,8 +4,9 @@
 #include <map>
 #include <assert.h>
 #include <sstream>
+#include <functional>
 
-static bool gTrace = false;
+static bool gTrace = true;
 
 template<typename T>
 struct Maybe
@@ -78,7 +79,7 @@ typedef enum Tag
 };
 
 struct Item;
-typedef Item (*Native)(Item,Context*);
+typedef void (*Native)(Item,Context*, std::function<void(Item)>);
 
 struct Proc {
 	Cell*		mProc;
@@ -147,7 +148,7 @@ struct Cell {
 static Item gUnspecified;
 
 struct Context;
-Item eval(Item item, Context* context);
+void eval(Item item, Context* context, std::function<void(Item)> k);
 
 struct Context {
 	std::map< uint32_t, Item >	mBindings;
@@ -162,7 +163,7 @@ struct Context {
 		: mOuter(context)
 	{}
 
-	Context(Cell* variables, Cell* params, Context* outer, Context* evalcontext)
+	Context(Cell* variables, Cell* params, Context* outer)
 		: mOuter(outer)
 	{
 		std::stringstream sstream;
@@ -172,7 +173,7 @@ struct Context {
 				sstream << "Binding: " << print(variables->mCar) << " = " << print(params->mCar) << std::endl;
 				puts(sstream.str().c_str());
 			}
-			mBindings[variables->mCar.mSymbol] = eval(params->mCar, evalcontext);
+			mBindings[variables->mCar.mSymbol] = params->mCar;
 			variables	= variables->mCdr.mCell;
 			params		= params->mCdr.mCell;
 		} while (variables);
@@ -194,7 +195,7 @@ struct Context {
 		return mBindings[symbol];
 	}
 
-	void Set(uint32_t symbol, Item& value)
+	void Set(uint32_t symbol, Item value)
 	{
 		mBindings[symbol] = value;
 	}
@@ -588,75 +589,124 @@ Item cdr(Item pair)
 	return pair.mCell->mCdr;
 }
 
-Item cons(Item pair, Context* context)
+void cons(Item pair, Context* context, std::function<void(Item)> k )
 {
-	auto first =  eval(car(pair), context);
-	auto second = eval(car(cdr(pair)), context);
-
-	return Item( new Cell(first, second));
+	eval(car(pair), context, [context, pair, k](Item first){
+		eval(car(cdr(pair)), context, [first, k](Item second){
+			k(Item(new Cell(first, second)));
+		}); });
 }
 
-Item null(Item pair, Context* context)
+void null(Item pair, Context* context, std::function<void(Item)> k)
 {
-	auto item = eval(car(pair), context);
-	return Item( (item.mTag == eCell &&  item.mCell == nullptr) ? 1 : 0);
+	eval(car(pair), context, [k](Item item){
+		k(Item((item.mTag == eCell &&  item.mCell == nullptr) ? 1 : 0));
+	});
 }
 
-Item carProc(Item pair,Context* context)
+void carProc(Item pair,Context* context, std::function<void(Item)> k)
 {
-	return car(eval(car(pair),context));
+	eval(car(pair), context, [k](Item item){
+		k(car(item));
+	});
 }
 
-Item cdrProc(Item pair,Context* context)
+void cdrProc(Item pair,Context* context, std::function<void(Item)> k)
 {
-	return cdr(eval(car(pair),context));
+	eval(car(pair), context, [k](Item item){
+		k(cdr(item));
+	});
 }
 
-Item mul(Item pair, Context* context)
+void mul(Item pair, Context* context, std::function<void(Item)> k)
 {
-	return Item( eval(car(pair), context).mNumber * eval(car(cdr(pair)), context).mNumber);
+	eval(car(pair), context, [context, k, pair](Item first) {
+		eval( car(cdr(pair)), context, [first,k](Item second){
+			k( Item( first.mNumber * second.mNumber ) );
+		}); 
+	});
 }
 
-Item add(Item pair, Context* context)
+void add(Item pair, Context* context, std::function<void(Item)> k)
 {
-	return Item(eval(car(pair), context).mNumber + eval(car(cdr(pair)), context).mNumber);
+	eval(car(pair), context, [context, k, pair](Item first) {
+		eval(car(cdr(pair)), context, [first, k](Item second){
+			k(Item(first.mNumber + second.mNumber));
+		});
+	});
 }
 
-Item sub(Item pair, Context* context)
+void sub(Item pair, Context* context, std::function<void(Item)> k)
 {
-	return Item(eval(car(pair), context).mNumber - eval(car(cdr(pair)), context).mNumber);
+	eval(car(pair), context, [context, k, pair](Item first) {
+		eval(car(cdr(pair)), context, [first, k](Item second){
+			k(Item(first.mNumber - second.mNumber));
+		});
+	});
 }
 
-Item div(Item pair, Context* context)
+
+void div(Item pair, Context* context, std::function<void(Item)> k)
 {
-	return Item(eval(car(pair), context).mNumber / eval(car(cdr(pair)), context).mNumber);
+	eval(car(pair), context, [context, k, pair](Item first) {
+		eval(car(cdr(pair)), context, [first, k](Item second){
+			k(Item(first.mNumber / second.mNumber));
+		});
+	});
 }
 
-Item mod(Item pair, Context* context)
+
+void mod(Item pair, Context* context, std::function<void(Item)> k)
 {
-	return Item(eval(car(pair), context).mNumber % eval(car(cdr(pair)), context).mNumber);
+	eval(car(pair), context, [context, k, pair](Item first) {
+		eval(car(cdr(pair)), context, [first, k](Item second){
+			k(Item(first.mNumber % second.mNumber));
+		});
+	});
 }
 
-Item compare(Item pair, Context* context)
+
+void compare(Item pair, Context* context, std::function<void(Item)> k)
 {
-	auto first = eval(car(pair), context);
-	auto second = eval(car(cdr(pair)), context);
-	if (first.mTag == second.mTag)
+	eval(car(pair), context, [context, k, pair](Item first) {
+		eval(car(cdr(pair)), context, [first, k](Item second){
+			if (first.mTag == second.mTag)
+			{
+				switch (first.mTag)
+				{
+				case eNumber:
+					k(Item((first.mNumber == second.mNumber) ? 1 : 0));
+				case eSymbol:
+					k(Item((first.mSymbol == second.mSymbol) ? 1 : 0));
+				default:
+					k(Item(0));
+				}
+			}
+			else
+			{
+				k(Item(0));
+			}
+		}); 
+	});
+}
+
+void evalargs(Item in, Context* context, std::function<void(Item)> k )
+{
+	if ( in.mCell == nullptr)
 	{
-		switch (first.mTag)
-		{
-		case eNumber:
-			return Item((first.mNumber == second.mNumber) ? 1 : 0);
-		case eSymbol:
-			return Item((first.mSymbol == second.mSymbol) ? 1 : 0);
-		default:
-			return Item(0);
-		}
+		k(Item((Cell*)nullptr));
 	}
-	return Item(0);
+	else
+	{
+		eval(in.mCell->mCar, context, [in, context,k](Item result){
+			evalargs(in.mCell->mCdr, context, [result,k](Item rest){
+				k(Item(new Cell(result, rest)));
+			});
+		});
+	}
 }
 
-Item eval(Item item, Context* context)
+void eval(Item item, Context* context, std::function<void(Item)> k )
 {
 	if (gTrace)
 	{
@@ -665,89 +715,95 @@ Item eval(Item item, Context* context)
 	switch (item.mTag)
 	{
 	case eNumber:
-		return item;
+		k(item);
+		break;
 	case eSymbol:
-		return context->Lookup(item.mSymbol);
+		k(context->Lookup(item.mSymbol));
+		break;
 	case eCell:
 	{
-		if ( !item.mCell )
+		if (!item.mCell)
 		{
-			return item;
+			k(item);
 		}
 
-		uint32_t symbol = car( item).mSymbol;
+		uint32_t symbol = car(item).mSymbol;
 		if (symbol == gSymbolTable.GetSymbol("quote"))
 		{
-			return car(cdr(item));
+			k(car(cdr(item)));
 		}
 		else if (symbol == gSymbolTable.GetSymbol("define"))
 		{
 			Item value, name, params;
 			params = car(cdr(item));
-			if ( params.mTag == eSymbol)
+			if (params.mTag == eSymbol)
 			{
 				name = car(cdr(item));
 				if (length(item.mCell) == 3)
 				{
-					value = eval(car(cdr(cdr(item))), context);
+					eval(car(cdr(cdr(item))), context, [name, context, k](Item value){ context->Set(name.mSymbol, value); k(value); });
 				}
 			}
-			else if ( params.mTag == eCell)
+			else if (params.mTag == eCell)
 			{
 				name = car(params);
 				auto arglist = cdr(params);
 				auto body = car(cdr(cdr(item)));
 
-				value = Item( new Cell( arglist, Item(new Cell(body) )), context);
+				value = Item(new Cell(arglist, Item(new Cell(body))), context);
+				context->Set(name.mSymbol, value);
+				k(value);
 			}
-			context->Set(name.mSymbol, value);
-			return value;
 		}
 		else if (symbol == gSymbolTable.GetSymbol("set!"))
 		{
-			auto v = eval(car(cdr(cdr(item))), context);
-			context->Set(car(cdr(item)).mSymbol, v);
-			return v;
+			eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ context->Set(car(cdr(item)).mSymbol, v); k(v); });
 		}
 		else if (symbol == gSymbolTable.GetSymbol("if"))
 		{
-			if (eval( car(cdr(item)), context).mNumber)
-			{
-				return eval( car(cdr(cdr(item))), context);
-			}
-			else if (length(item.mCell) > 3)
-			{
-				return eval( car(cdr(cdr(cdr(item)))), context);
-			}
-			else
-			{
-				return gUnspecified;
-			}
+			eval(car(cdr(item)), context, [item, context, k](Item b){
+				if (b.mNumber)
+				{
+					eval(car(cdr(cdr(item))), context, k);
+				}
+				else if (length(item.mCell) > 3)
+				{
+					eval(car(cdr(cdr(cdr(item)))), context, k);
+				}
+				else
+				{
+					k(gUnspecified);
+				}
+			});
 		}
 		else if (symbol == gSymbolTable.GetSymbol("lambda"))
 		{
-			return Item(cdr(item).mCell, context);
+			k(Item(cdr(item).mCell, context));
 		}
 		else
 		{
-			Item proc = eval( car(item), context);
-			assert(proc.mTag == eProc);
-			if (proc.mProc.mNative)
-			{
-				return (proc.mProc.mNative)( Item(cdr(item).mCell), context);
-			}
-			else
-			{
-				Cell* params = car(Item(proc.mProc.mProc)).mCell;
-				Cell* body = car(cdr(Item(proc.mProc.mProc))).mCell;
-				auto newContext = new Context(params, cdr(item).mCell, proc.mProc.mClosure, context);
-				return eval(Item(body), newContext);
-			}
+			eval(car(item), context, [item, k, context](Item proc){
+				assert(proc.mTag == eProc);
+				if (proc.mProc.mNative)
+				{
+					(proc.mProc.mNative)(Item(cdr(item).mCell), context, k);
+				}
+				else
+				{
+					Cell* params = car(Item(proc.mProc.mProc)).mCell;
+					Cell* body = car(cdr(Item(proc.mProc.mProc))).mCell;
+					evalargs(cdr(item), context, [params,proc,body,k](Item arglist){
+						auto newContext = new Context(params, arglist.mCell, proc.mProc.mClosure);
+						eval(Item(body), newContext, k);
+					});
+				}
+			});
 		}
 	}
+	break;
 		// fall through
 	default:
-		return gUnspecified;
+		k(gUnspecified);
 	}
 }
 
@@ -776,9 +832,11 @@ void repl()
 		Maybe<Item> item = parseForm(buffer, &rest);
 		if (item.mValid)
 		{
-			auto s = print(eval(item.mV, &gRootContext));
-			puts(s.c_str());
-			putchar('\n');
+			eval(item.mV, &gRootContext, [](Item item){
+				auto s = print(item);
+				puts(s.c_str());
+				putchar('\n');
+			});
 		}
 		else
 		{
@@ -866,9 +924,10 @@ void evals_to_number(char* datum, int32_t value, Context* context = &gRootContex
 	char* rest;
 	auto item = parseForm(datum, &rest);
 	assert(item.mValid);
-	auto result = eval(item.mV, context );
-	assert(result.mTag == eNumber);
-	assert(result.mNumber == value);
+	eval(item.mV, context, [value](Item result) {
+		assert(result.mTag == eNumber);
+		assert(result.mNumber == value);
+	});
 }
 
 void evals_to_symbol(char* datum, const char* symbol, Context* context = &gRootContext)
@@ -876,9 +935,10 @@ void evals_to_symbol(char* datum, const char* symbol, Context* context = &gRootC
 	char* rest;
 	auto item = parseForm(datum, &rest);
 	assert(item.mValid);
-	auto result = eval(item.mV, context );
-	assert(result.mTag == eSymbol);
-	assert(result.mSymbol == gSymbolTable.GetSymbol(symbol));
+	eval(item.mV, context, [symbol](Item result) {
+		assert(result.mTag == eSymbol);
+		assert(result.mSymbol == gSymbolTable.GetSymbol(symbol));
+	});
 }
 
 
@@ -905,33 +965,32 @@ void test_context()
 	evals_to_number("x", 10, context);
 
 	evals_to_symbol("(define x 'cat)", "cat", context);
-	eval(parseForm("(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context);
+	eval(parseForm("(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length ())", 0, context);
 	evals_to_number("(length '(cat))", 1, context);
 	evals_to_number("(length '(cat 'dog))", 2, context);
 
-	eval(parseForm("(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context);
+	eval(parseForm("(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length2 ())", 0, context);
 	evals_to_number("(length2 '(cat))", 1, context);
 	evals_to_number("(length2 '(cat 'dog))", 2, context);
 
-    eval(parseForm("(define make-plus (lambda (x) (lambda (y) (+ x y)))))",&rest).mV, context);
-	eval(parseForm("(define plus10 (make-plus 10))", &rest).mV, context);
-	eval(parseForm("(define inc (make-plus 1))", &rest).mV, context);
+	eval(parseForm("(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
+	eval(parseForm("(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
+	eval(parseForm("(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
 	evals_to_number("(plus10 1)", 11, context);
 	evals_to_number("(inc 10)", 11, context);
 
 	eval(parseForm("(define map (lambda (p xs)" 
 				   "(if (null? xs) ()" 
-				        "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context);
+				   "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context, [](Item item){});
 
-	eval(parseForm("(map inc '(1 2 3))", &rest).mV, context);
+	eval(parseForm("(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
 }
 
 
 int main(int argc, char* argv[])
 {
-	char* rest;
 	addNativeFns();
 
 	test_numbers();
@@ -944,20 +1003,5 @@ int main(int argc, char* argv[])
 	test_eval();
 	test_context();
 
-	auto item = parseForm("(define member"
-		"( lambda (x xs) (" 
-		"        (if (null? xs ) 0 1)"
-		/*"                (if (= x (car xs) ) 1"
-		"                                    ( member x (cdr xs) )"
-		"        )"*/
-		")" 
-		")" 
-		")"
-		,  &rest);
-	
-	auto evaled = eval( item.mV, &gRootContext);
-
-
 	repl();
 }
-
