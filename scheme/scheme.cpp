@@ -626,6 +626,26 @@ Maybe<Item> parseForm(Context* context, char* cs, char** rest)
 	return Maybe<Item>();
 }
 
+Maybe<Item> parsePair(Context* context, char* cs, char** rest)
+{
+	if (*cs != '.')
+	{
+		return Maybe<Item>();
+	}
+
+	cs++;
+	parseAtmosphere(cs, rest);
+	cs = *rest;
+
+	Maybe<Item> item;
+	if ((item = parseForm(context, cs, rest)).mValid)
+	{
+		return item;
+	}
+
+	return Maybe<Item>();
+}
+
 Maybe<Cell*> parseForms(Context* context, char* cs, char** rest)
 {
 	Maybe<Item> item;
@@ -641,15 +661,24 @@ Maybe<Cell*> parseForms(Context* context, char* cs, char** rest)
 	}
 
 	parseAtmosphere(*rest, rest);
+	cs = *rest;
 
-	Maybe<Cell*> tail;
-	if ((tail = parseForms(context, *rest, rest)).mValid)
+	Maybe<Item> second;
+	if ((second = parsePair(context, cs, rest)).mValid)
 	{
-		cell->mCdr = Item(tail.mV);
+		cell->mCdr = second.mV;
 	}
 	else
 	{
-		cell->mCdr = Item((Cell*)nullptr);
+		Maybe<Cell*> tail;
+		if ((tail = parseForms(context, cs, rest)).mValid)
+		{
+			cell->mCdr = Item(tail.mV);
+		}
+		else
+		{
+			cell->mCdr = Item((Cell*)nullptr);
+		}
 	}
 
 	return Maybe<Cell*>(cell);
@@ -712,45 +741,6 @@ Maybe<Item> parseNonEmptyList(Context* context, char* cs, char**rest)
 	return Maybe<Item>(item);
 }
 
-Maybe<Item> parsePair( Context* context, char* cs, char** rest)
-{
-	if (*cs == '(')
-	{
-		cs++;
-		parseAtmosphere(cs, rest);
-		cs = *rest;
-		Maybe<Item> first, second;
-		if ((first = parseForm(context, *rest, rest)).mValid)
-		{
-			cs = *rest;
-			parseAtmosphere(cs, rest);
-			cs = *rest;
-
-			if (*cs == '.')
-			{
-				cs++;
-				parseAtmosphere(cs, rest);
-				cs = *rest;
-
-				if ((second = parseForm(context, cs, rest)).mValid)
-				{
-					cs = *rest;
-					parseAtmosphere(cs, rest);
-					cs = *rest;
-					if (*cs == ')')
-					{
-						cs++;
-						Cell* pair = allocCell(context, first.mV, second.mV);
-						*rest = cs;
-						return Maybe<Item>( Item(pair) );
-					}
-				}
-			}
-		}
-	}
-
-	return Maybe<Item>();
-}
 
 Maybe<Item> parseList(Context* context, char* cs, char** rest)
 {
@@ -759,10 +749,10 @@ Maybe<Item> parseList(Context* context, char* cs, char** rest)
 	{
 		return item;
 	}
-	else if ((item = parsePair(context, cs, rest)).mValid)
+/*	else if ((item = parsePair(context, cs, rest)).mValid)
 	{
 		return item;
-	}
+	} */
 	else if ((item = parseNonEmptyList(context, cs, rest)).mValid)
 	{
 		return item;
@@ -991,28 +981,52 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			{
 				Item value, name, params;
 				params = car(cdr(item));
-				if (params.mTag == eSymbol)
+				switch (params.mTag)
 				{
-					name = car(cdr(item));
-					if (length(item.mCell) == 3)
+					// (define x ...)
+					case eSymbol:
 					{
-						eval(car(cdr(cdr(item))), context, [name, context, k](Item value){ context->Set(name.mSymbol, value); k(value); });
-					}
-				}
-				else if (params.mTag == eCell)
-				{
-					name = car(params);
-					auto arglist = cdr(params);
-					auto body = car(cdr(cdr(item)));
+						name = car(cdr(item));
 
-					value = Item( allocCell(context, arglist, Item( allocCell(context,body))), context);
-					context->Set(name.mSymbol, value);
-					k(value);
+						// (define x y )
+						if (length(item.mCell) == 3)
+						{
+							eval(car(cdr(cdr(item))), context, [name, context, k](Item value){
+								context->Set(name.mSymbol, value);
+								k(value);
+							});
+						}
+						// (define x )
+						else
+						{
+							context->Set(name.mSymbol, gUnspecified);
+							k(gUnspecified);
+						}
+						break;
+					}
+					// (define (f ...) (body))
+					case eCell:
+					{
+						name = car(params);
+						auto arglist = cdr(params);
+						auto body = car(cdr(cdr(item)));
+
+						value = Item(allocCell(context, arglist, Item(allocCell(context, body))), context);
+						context->Set(name.mSymbol, value);
+						k(value);
+						break;
+					}
+					default:
+					{
+						puts("&invalid-define");
+					}
 				}
 			}
 			else if (symbol == gSymbolTable.GetSymbol("set!"))
 			{
-				eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ context->Set(car(cdr(item)).mSymbol, v); k(v); });
+				eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ 
+					context->Set(car(cdr(item)).mSymbol, v); k(v); 
+				});
 			}
 			else if (symbol == gSymbolTable.GetSymbol("if"))
 			{
@@ -1167,7 +1181,8 @@ void test_list()
 	assert(parseList(&gRootContext,"(    )", &rest).mValid);
 	assert(parseList(&gRootContext,"()", &rest).mV.mTag == eCell);
 	assert(parseList(&gRootContext,"( cat )", &rest).mV.mTag == eCell);
-	assert(parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext,"( cat vs unicorn )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext, "( Imogen loves Mummy and Daddy . xs )", &rest).mV.mTag == eCell);
 	assert(parseList(&gRootContext,"( lambda (x) ( plus x 10 ) )", &rest).mV.mTag == eCell);
 
 	assert( length( parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV.mCell) == 3);
