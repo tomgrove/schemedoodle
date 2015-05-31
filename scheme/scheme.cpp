@@ -254,12 +254,12 @@ Context* allocContext(Context* current, Cell* variables, Cell* params, Context* 
 	return new (context)Context(variables, params, outer);
 }
 
-Cell* allocCell( Item car, Item cdr = Item((Cell*)nullptr))
+Cell* allocCell( Context* current, Item car, Item cdr = Item((Cell*)nullptr))
 {
 	if (gCellFreeList == nullptr)
 	{
-		// gc
-		return nullptr;
+		gc(current);
+		assert(gCellFreeList);;
 	}
 
 	auto cell = gCellFreeList;
@@ -570,11 +570,11 @@ Maybe<void> parseAtmosphere(char* cs, char** rest)
 	return Maybe<void>(true);
 }
 
-Maybe<Item> parseList(char* cs, char** rest);
+Maybe<Item> parseList(Context* context, char* cs, char** rest);
 
-Maybe<Item> parseForm(char*cs, char** rest);
+Maybe<Item> parseForm(Context* context, char*cs, char** rest);
 
-Maybe<Item> parseQuotedForm(char*cs, char** rest)
+Maybe<Item> parseQuotedForm(Context* context, char*cs, char** rest)
 {
 	if (*cs != '\'')
 	{
@@ -583,15 +583,15 @@ Maybe<Item> parseQuotedForm(char*cs, char** rest)
 	cs++;
 
 	Maybe<Item> item;
-	if ((item = parseForm(cs, rest)).mValid)
+	if ((item = parseForm(context, cs, rest)).mValid)
 	{
-		Cell* qcell = allocCell( Item("quote"), Item( allocCell( item.mV ) ));
+		Cell* qcell = allocCell( context, Item("quote"), Item( allocCell( context, item.mV ) ));
 		return Maybe<Item>(Item(qcell));
 	}
 
 	return Maybe<Item>();
 }
-Maybe<Item> parseUnquotedForm(char*cs, char** rest)
+Maybe<Item> parseUnquotedForm( Context* context, char*cs, char** rest)
 {
 	Maybe<Item> item;
 	if ((item = parseNumber(cs, rest)).mValid)
@@ -602,7 +602,7 @@ Maybe<Item> parseUnquotedForm(char*cs, char** rest)
 	{
 		return item;
 	}
-	else if ((item = parseList(cs, rest)).mValid)
+	else if ((item = parseList(context, cs, rest)).mValid)
 	{
 		return item;
 	}
@@ -612,27 +612,27 @@ Maybe<Item> parseUnquotedForm(char*cs, char** rest)
 	}
 }
 
-Maybe<Item> parseForm(char* cs, char** rest)
+Maybe<Item> parseForm(Context* context, char* cs, char** rest)
 {
 	Maybe<Item> item;
-	if ((item = parseQuotedForm(cs, rest)).mValid)
+	if ((item = parseQuotedForm(context, cs, rest)).mValid)
 	{
 		return item;
 	}
-	else if ((item = parseUnquotedForm(cs, rest)).mValid )
+	else if ((item = parseUnquotedForm(context, cs, rest)).mValid )
 	{
 		return item;
 	}
 	return Maybe<Item>();
 }
 
-Maybe<Cell*> parseForms(char* cs, char** rest)
+Maybe<Cell*> parseForms(Context* context, char* cs, char** rest)
 {
 	Maybe<Item> item;
 	Cell* cell = nullptr;
-	if ((item = parseForm(cs, rest)).mValid)
+	if ((item = parseForm(context, cs, rest)).mValid)
 	{
-		cell = allocCell(Item());
+		cell = allocCell(context, Item());
 		cell->mCar = item.mV;
 	}
 	else
@@ -643,7 +643,7 @@ Maybe<Cell*> parseForms(char* cs, char** rest)
 	parseAtmosphere(*rest, rest);
 
 	Maybe<Cell*> tail;
-	if ((tail = parseForms(*rest, rest)).mValid)
+	if ((tail = parseForms(context, *rest, rest)).mValid)
 	{
 		cell->mCdr = Item(tail.mV);
 	}
@@ -680,7 +680,7 @@ Maybe<Item> parseNil(char* cs, char** rest)
 	return Maybe<Item>();
 }
 
-Maybe<Item> parseNonEmptyList(char* cs, char**rest)
+Maybe<Item> parseNonEmptyList(Context* context, char* cs, char**rest)
 {
 	Maybe<Item> item;
 	if (*cs != '(')
@@ -691,7 +691,7 @@ Maybe<Item> parseNonEmptyList(char* cs, char**rest)
 
 	parseAtmosphere(cs, rest);
 	Maybe<Cell*> cell;
-	if ( (cell = parseForms(*rest, rest)).mValid )
+	if ( (cell = parseForms(context, *rest, rest)).mValid )
 	{
 		item = Item(cell.mV);
 	}
@@ -712,7 +712,7 @@ Maybe<Item> parseNonEmptyList(char* cs, char**rest)
 	return Maybe<Item>(item);
 }
 
-Maybe<Item> parsePair(char* cs, char** rest)
+Maybe<Item> parsePair( Context* context, char* cs, char** rest)
 {
 	if (*cs == '(')
 	{
@@ -720,7 +720,7 @@ Maybe<Item> parsePair(char* cs, char** rest)
 		parseAtmosphere(cs, rest);
 		cs = *rest;
 		Maybe<Item> first, second;
-		if ((first = parseForm(*rest, rest)).mValid)
+		if ((first = parseForm(context, *rest, rest)).mValid)
 		{
 			cs = *rest;
 			parseAtmosphere(cs, rest);
@@ -732,7 +732,7 @@ Maybe<Item> parsePair(char* cs, char** rest)
 				parseAtmosphere(cs, rest);
 				cs = *rest;
 
-				if ((second = parseForm(cs, rest)).mValid)
+				if ((second = parseForm(context, cs, rest)).mValid)
 				{
 					cs = *rest;
 					parseAtmosphere(cs, rest);
@@ -740,7 +740,7 @@ Maybe<Item> parsePair(char* cs, char** rest)
 					if (*cs == ')')
 					{
 						cs++;
-						Cell* pair = allocCell(first.mV, second.mV);
+						Cell* pair = allocCell(context, first.mV, second.mV);
 						*rest = cs;
 						return Maybe<Item>( Item(pair) );
 					}
@@ -752,18 +752,18 @@ Maybe<Item> parsePair(char* cs, char** rest)
 	return Maybe<Item>();
 }
 
-Maybe<Item> parseList(char* cs, char** rest)
+Maybe<Item> parseList(Context* context, char* cs, char** rest)
 {
 	Maybe<Item> item;
 	if ((item = parseNil(cs, rest)).mValid)
 	{
 		return item;
 	}
-	else if ((item = parsePair(cs, rest)).mValid)
+	else if ((item = parsePair(context, cs, rest)).mValid)
 	{
 		return item;
 	}
-	else if ((item = parseNonEmptyList(cs, rest)).mValid)
+	else if ((item = parseNonEmptyList(context, cs, rest)).mValid)
 	{
 		return item;
 	}
@@ -830,8 +830,8 @@ Item cdr(Item pair)
 void cons(Item pair, Context* context, std::function<void(Item)> k )
 {
 	eval(car(pair), context, [context, pair, k](Item first){
-		eval(car(cdr(pair)), context, [first, k](Item second){
-			k(Item( allocCell(first, second)));
+		eval(car(cdr(pair)), context, [first, k,context](Item second){
+			k(Item( allocCell(context, first, second)));
 		}); });
 }
 
@@ -952,8 +952,8 @@ void mapeval(Item in, Context* context, std::function<void(Item)> k )
 	else
 	{
 		eval(in.mCell->mCar, context, [in, context,k](Item result){
-			mapeval(in.mCell->mCdr, context, [result,k](Item rest){
-				k(Item( allocCell(result, rest)));
+			mapeval(in.mCell->mCdr, context, [context,result,k](Item rest){
+				k(Item( allocCell(context, result, rest)));
 			});
 		});
 	}
@@ -1005,7 +1005,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 					auto arglist = cdr(params);
 					auto body = car(cdr(cdr(item)));
 
-					value = Item( allocCell(arglist, Item( allocCell(body))), context);
+					value = Item( allocCell(context, arglist, Item( allocCell(context,body))), context);
 					context->Set(name.mSymbol, value);
 					k(value);
 				}
@@ -1083,12 +1083,9 @@ void addNativeFns()
 
 void tcoeval(Item form, Context* context, std::function<void(Item)> k)
 {
-	uint32_t count = 0;
 	yield([form,context,k](){ eval(form, context, k); });
 	while (gNext) {
-		count++;
 		gNext();
-		printf("yield count%d\n", count);
 	}
 }
 
@@ -1100,7 +1097,7 @@ void repl()
 		char* rest;
 		printf(">>");
 		gets_s(buffer, sizeof( buffer ));
-		Maybe<Item> form = parseForm(buffer, &rest);
+		Maybe<Item> form = parseForm(&gRootContext, buffer, &rest);
 		if (form.mValid)
 		{
 			tcoeval(form.mV, &gRootContext, [](Item item){
@@ -1113,8 +1110,6 @@ void repl()
 		{
 			puts("parse error\n");
 		}
-
-		gc(&gRootContext);
 	}
 }
 
@@ -1168,31 +1163,31 @@ void test_symbols()
 void test_list()
 {
 	char* rest;
-	assert(parseList("()",&rest).mValid);
-	assert(parseList("(    )", &rest).mValid);
-	assert(parseList("()", &rest).mV.mTag == eCell);
-	assert(parseList("( cat )", &rest).mV.mTag == eCell);
-	assert(parseList("( cat 100 unicorn )", &rest).mV.mTag == eCell);
-	assert(parseList("( lambda (x) ( plus x 10 ) )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext,"()",&rest).mValid);
+	assert(parseList(&gRootContext,"(    )", &rest).mValid);
+	assert(parseList(&gRootContext,"()", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext,"( cat )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext,"( lambda (x) ( plus x 10 ) )", &rest).mV.mTag == eCell);
 
-	assert( length( parseList("( cat 100 unicorn )", &rest).mV.mCell) == 3);
-	assert( length(parseList("( Maddy loves ( horses and unicorns) )", &rest).mV.mCell) == 3);
-	assert(length(parseList("( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV.mCell) == 3);
-	assert(!parseList("( Maddy loves ", &rest).mValid);
+	assert( length( parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV.mCell) == 3);
+	assert( length(parseList(&gRootContext,"( Maddy loves ( horses and unicorns) )", &rest).mV.mCell) == 3);
+	assert(length(parseList(&gRootContext,"( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV.mCell) == 3);
+	assert(!parseList(&gRootContext,"( Maddy loves ", &rest).mValid);
 }
 
 void test_quote()
 {
 	char* rest;
-	assert(parseForm("'hello-everyone", &rest).mValid);
-	assert(parseForm("'(hello everyone)", &rest).mValid );
-	assert(parseForm("'''hello-multiqoute", &rest).mValid );
+	assert(parseForm(&gRootContext,"'hello-everyone", &rest).mValid);
+	assert(parseForm(&gRootContext,"'(hello everyone)", &rest).mValid );
+	assert(parseForm(&gRootContext,"'''hello-multiqoute", &rest).mValid );
 }
 
 void evals_to_number(char* datum, int32_t value, Context* context = &gRootContext)
 {
 	char* rest;
-	auto item = parseForm(datum, &rest);
+	auto item = parseForm(context, datum, &rest);
 	assert(item.mValid);
 	tcoeval(item.mV, context, [value](Item result) {
 		assert(result.mTag == eNumber);
@@ -1203,7 +1198,7 @@ void evals_to_number(char* datum, int32_t value, Context* context = &gRootContex
 void evals_to_symbol(char* datum, const char* symbol, Context* context = &gRootContext)
 {
 	char* rest;
-	auto item = parseForm(datum, &rest);
+	auto item = parseForm(context,datum, &rest);
 	assert(item.mValid);
 	tcoeval(item.mV, context, [symbol](Item result) {
 		assert(result.mTag == eSymbol);
@@ -1227,7 +1222,7 @@ void test_eval()
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 0)", "false");
 
 	char* rest;
-	auto list = parseForm("('a 'b (+ 1 2))", &rest).mV;
+	auto list = parseForm(&gRootContext,"('a 'b (+ 1 2))", &rest).mV;
 	mapeval(list, &gRootContext, [](Item item){ puts(print(item).c_str()); });
 }
 
@@ -1239,30 +1234,30 @@ void test_context()
 	evals_to_number("x", 10, context);
 
 	evals_to_symbol("(define x 'cat)", "cat", context);
-	tcoeval(parseForm("(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm(context,"(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length ())", 0, context);
 	evals_to_number("(length '(cat))", 1, context);
 	evals_to_number("(length '(cat 'dog))", 2, context);
 
-	tcoeval(parseForm("(define (hello-world) (print 'hello-world))", &rest).mV, context, [](Item){});
-	tcoeval(parseForm("(hello-world)", &rest).mV, context, [](Item){});
+	tcoeval(parseForm(context,"(define (hello-world) (print 'hello-world))", &rest).mV, context, [](Item){});
+	tcoeval(parseForm(context,"(hello-world)", &rest).mV, context, [](Item){});
 
-	tcoeval(parseForm("(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm(context,"(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length2 ())", 0, context);
 	evals_to_number("(length2 '(cat))", 1, context);
 	evals_to_number("(length2 '(cat 'dog))", 2, context);
 
-	tcoeval(parseForm("(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
-	tcoeval(parseForm("(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
-	tcoeval(parseForm("(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm(context,"(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm(context,"(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm(context,"(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
 	evals_to_number("(plus10 1)", 11, context);
 	evals_to_number("(inc 10)", 11, context);
 
-	tcoeval(parseForm("(define map (lambda (p xs)" 
+	tcoeval(parseForm(context,"(define map (lambda (p xs)" 
 				   "(if (null? xs) ()" 
 				   "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context, [](Item item){});
 
-	tcoeval(parseForm("(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm(context,"(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
 }
 
 
