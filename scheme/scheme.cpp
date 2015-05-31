@@ -152,6 +152,7 @@ static Item gUnspecified;
 
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
+void gc(Context*);
 
 struct Context {
 	std::map< uint32_t, Item >	mBindings;
@@ -172,7 +173,7 @@ struct Context {
 		: mOuter(outer)
 	{
 		std::stringstream sstream;
-		do {
+		while(variables) {
 			if (gTrace)
 			{
 				sstream << "Binding: " << print(variables->mCar) << " = " << print(params->mCar) << std::endl;
@@ -181,7 +182,7 @@ struct Context {
 			mBindings[variables->mCar.mSymbol] = params->mCar;
 			variables	= variables->mCdr.mCell;
 			params		= params->mCdr.mCell;
-		} while (variables);
+		}
 	}
 
 	Item Lookup(uint32_t symbol )
@@ -238,12 +239,12 @@ void allocFreeLists()
 	gContextFreeList[cMaxContexts - 1].mNext = nullptr;
 }
 
-Context* allocContext(Cell* variables, Cell* params, Context* outer)
+Context* allocContext(Context* current, Cell* variables, Cell* params, Context* outer)
 {
 	if (gContextFreeList == nullptr)
 	{
-		// gc
-		return nullptr;
+		gc(current);
+		assert(gContextFreeList);
 	}
 	
 	auto context		= gContextFreeList;
@@ -273,6 +274,12 @@ void freeCell(Cell* cell)
 {
 	cell->mNext = gCellFreeList;
 	gCellFreeList = cell;
+}
+
+void freeContext(Context* context)
+{
+	context->mNext = gContextFreeList;
+	gContextFreeList = context;
 }
 
 void markCell(Cell* cell)
@@ -331,6 +338,71 @@ void markContext(Context* context)
 		markContext(context->mOuter);
 	}
 }
+uint32_t collectContexts()
+{
+	Context*i = gContextAllocList;
+	Context* prev = nullptr;
+	uint32_t collected = 0;
+	while (i)
+	{
+		Context* next = i->mNext;
+		if (!i->mReachable)
+		{
+			if (!prev)
+			{
+				gContextAllocList = i->mNext;
+			}
+			else
+			{
+				prev->mNext = i->mNext;
+			}
+
+			freeContext(i);
+			collected++;
+		}
+		else
+		{
+			prev = i;
+		}
+
+		i = next;
+	}
+
+	return collected;
+}
+
+uint32_t collectCells()
+{
+	Cell*i = gCellAllocList;
+	Cell* prev = nullptr;
+	uint32_t collected = 0;
+	while (i)
+	{
+		Cell* next = i->mNext;
+		if (!i->mReachable)
+		{
+			if (!prev)
+			{
+				gCellAllocList = i->mNext;
+			}
+			else
+			{
+				prev->mNext = i->mNext;
+			}
+
+			freeCell(i);
+			collected++;
+		}
+		else
+		{
+			prev = i;
+		}
+
+		i = next;
+	}
+
+	return collected;
+}
 
 void gc( Context* context )
 {
@@ -359,52 +431,13 @@ void gc( Context* context )
 
 	markContext(context);
 
-	i = gCellAllocList;
-	Cell* prev = nullptr;
-	count = 0;
-	while (i)
-	{
-		Cell* next = i->mNext;
-		if (!i->mReachable)
-		{
-			if (!prev)
-			{
-				gCellAllocList = i->mNext;
-			}
-			else
-			{
-				prev->mNext = i->mNext;
-			}
-
-			freeCell(i);
-			count++;
-		}
-		else
-		{
-			prev = i;
-		}
-
-		i = next;
-	}
+	uint32_t cellcount = collectCells();
+	uint32_t contextcount = collectContexts();
 
 	if (gVerboseGC)
 	{
-		printf("return %d cells to the free list\n",count);
+		printf("return %d cells and %d contexts to the free lists\n",cellcount, contextcount);
 	}
-
-	uint32_t livecc = 0;
-	j = gContextAllocList;
-	while (j)
-	{
-		if (j->mReachable)
-		{
-			livecc++;
-		}
-		j = j->mNext;
-	}
-
-	printf("%d live contexts\n", livecc);
-
 }
 
 
@@ -870,6 +903,14 @@ void mod(Item pair, Context* context, std::function<void(Item)> k)
 	});
 }
 
+void print(Item pair, Context* context, std::function<void(Item)> k)
+{
+	eval(car(pair), context, [context, k, pair](Item first) {
+		puts(print(first).c_str());
+		putchar('\n');
+		k(gUnspecified);
+	});
+}
 
 void compare(Item pair, Context* context, std::function<void(Item)> k)
 {
@@ -895,6 +936,13 @@ void compare(Item pair, Context* context, std::function<void(Item)> k)
 	});
 }
 
+static std::function<void(void)> gNext;
+
+void yield(std::function<void(void)> k)
+{
+	gNext = k;
+}
+
 void mapeval(Item in, Context* context, std::function<void(Item)> k )
 {
 	if ( in.mCell == nullptr)
@@ -913,6 +961,7 @@ void mapeval(Item in, Context* context, std::function<void(Item)> k )
 
 void eval(Item item, Context* context, std::function<void(Item)> k )
 {
+	gNext = nullptr;
 	if (gTrace)
 	{
 		printf("eval: %s\n", print(item).c_str());
@@ -1001,9 +1050,9 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 					{
 						Cell* params = car(Item(proc.mProc.mProc)).mCell;
 						auto body = car(cdr(Item(proc.mProc.mProc)));
-						mapeval(cdr(item), context, [params, proc, body, k](Item arglist){
-							auto newContext = allocContext(params, arglist.mCell, proc.mProc.mClosure);
-							eval(body, newContext, k);
+						mapeval(cdr(item), context, [context, params, proc, body, k](Item arglist){
+							auto newContext = allocContext( context, params, arglist.mCell, proc.mProc.mClosure);
+							yield([body, newContext, k](){ eval(body, newContext, k); });
 						});
 					}
 				});
@@ -1029,6 +1078,18 @@ void addNativeFns()
 	gRootContext.Set(gSymbolTable.GetSymbol("*"), Item(mul));
 	gRootContext.Set(gSymbolTable.GetSymbol("/"), Item(div));
 	gRootContext.Set(gSymbolTable.GetSymbol("%"), Item(mod));
+	gRootContext.Set(gSymbolTable.GetSymbol("print"), Item(print));
+}
+
+void tcoeval(Item form, Context* context, std::function<void(Item)> k)
+{
+	uint32_t count = 0;
+	yield([form,context,k](){ eval(form, context, k); });
+	while (gNext) {
+		count++;
+		gNext();
+		printf("yield count%d\n", count);
+	}
 }
 
 void repl()
@@ -1039,10 +1100,10 @@ void repl()
 		char* rest;
 		printf(">>");
 		gets_s(buffer, sizeof( buffer ));
-		Maybe<Item> item = parseForm(buffer, &rest);
-		if (item.mValid)
+		Maybe<Item> form = parseForm(buffer, &rest);
+		if (form.mValid)
 		{
-			eval(item.mV, &gRootContext, [](Item item){
+			tcoeval(form.mV, &gRootContext, [](Item item){
 				auto s = print(item);
 				puts(s.c_str());
 				putchar('\n');
@@ -1133,7 +1194,7 @@ void evals_to_number(char* datum, int32_t value, Context* context = &gRootContex
 	char* rest;
 	auto item = parseForm(datum, &rest);
 	assert(item.mValid);
-	eval(item.mV, context, [value](Item result) {
+	tcoeval(item.mV, context, [value](Item result) {
 		assert(result.mTag == eNumber);
 		assert(result.mNumber == value);
 	});
@@ -1144,7 +1205,7 @@ void evals_to_symbol(char* datum, const char* symbol, Context* context = &gRootC
 	char* rest;
 	auto item = parseForm(datum, &rest);
 	assert(item.mValid);
-	eval(item.mV, context, [symbol](Item result) {
+	tcoeval(item.mV, context, [symbol](Item result) {
 		assert(result.mTag == eSymbol);
 		assert(result.mSymbol == gSymbolTable.GetSymbol(symbol));
 	});
@@ -1178,27 +1239,30 @@ void test_context()
 	evals_to_number("x", 10, context);
 
 	evals_to_symbol("(define x 'cat)", "cat", context);
-	eval(parseForm("(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm("(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length ())", 0, context);
 	evals_to_number("(length '(cat))", 1, context);
 	evals_to_number("(length '(cat 'dog))", 2, context);
 
-	eval(parseForm("(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm("(define (hello-world) (print 'hello-world))", &rest).mV, context, [](Item){});
+	tcoeval(parseForm("(hello-world)", &rest).mV, context, [](Item){});
+
+	tcoeval(parseForm("(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length2 ())", 0, context);
 	evals_to_number("(length2 '(cat))", 1, context);
 	evals_to_number("(length2 '(cat 'dog))", 2, context);
 
-	eval(parseForm("(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
-	eval(parseForm("(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
-	eval(parseForm("(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm("(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm("(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm("(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
 	evals_to_number("(plus10 1)", 11, context);
 	evals_to_number("(inc 10)", 11, context);
 
-	eval(parseForm("(define map (lambda (p xs)" 
+	tcoeval(parseForm("(define map (lambda (p xs)" 
 				   "(if (null? xs) ()" 
 				   "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context, [](Item item){});
 
-	eval(parseForm("(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
+	tcoeval(parseForm("(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
 }
 
 
