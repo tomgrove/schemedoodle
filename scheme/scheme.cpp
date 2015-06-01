@@ -86,6 +86,13 @@ struct Proc {
 	Cell*		mProc;
 	Context*	mClosure;
 	Native		mNative;
+	bool operator==( Proc& rhs) const
+	{
+		if ( rhs.mNative) {
+			return this->mNative == rhs.mNative;
+		} 
+		return this->mProc == rhs.mProc;
+	}
 };
 
 struct Item {
@@ -169,19 +176,41 @@ struct Context {
 		: mOuter(context)
 	{}
 
-	Context(Cell* variables, Cell* params, Context* outer)
+	Context( Item variables, Cell* params, Context* outer)
 		: mOuter(outer)
 	{
-		std::stringstream sstream;
-		while(variables) {
-			if (gTrace)
-			{
-				sstream << "Binding: " << print(variables->mCar) << " = " << print(params->mCar) << std::endl;
-				puts(sstream.str().c_str());
+		// x <> (a ... )
+		if (variables.mTag == eSymbol)
+		{
+			mBindings[variables.mSymbol] = params->mCar;
+		}
+		// (x ... ) <> ( a ... )
+		else
+		{ 
+			assert(variables.mTag == eCell);
+			Cell* variablelist = variables.mCell;
+			while (variablelist) {
+				if (gTrace)
+				{
+					std::stringstream sstream;
+					sstream << "Binding: " << print(variablelist ->mCar) << " = " << print(params->mCar) << std::endl;
+					puts(sstream.str().c_str());
+				}
+				mBindings[variablelist->mCar.mSymbol] = params->mCar;
+				// ( x ... y z) <> ( a ... b c ) 
+				if (variablelist->mCdr.mTag == eCell)
+				{
+					variablelist = variablelist->mCdr.mCell;
+					params = params->mCdr.mCell;
+				}
+				// ( x y . z ) <> ( a b c )
+				else
+				{
+					assert(variablelist->mCdr.mTag == eSymbol);
+					mBindings[variablelist->mCdr.mSymbol] = Item(params->mCdr.mCell);
+					return;
+				}
 			}
-			mBindings[variables->mCar.mSymbol] = params->mCar;
-			variables	= variables->mCdr.mCell;
-			params		= params->mCdr.mCell;
 		}
 	}
 
@@ -239,7 +268,7 @@ void allocFreeLists()
 	gContextFreeList[cMaxContexts - 1].mNext = nullptr;
 }
 
-Context* allocContext(Context* current, Cell* variables, Cell* params, Context* outer)
+Context* allocContext(Context* current, Item variables, Cell* params, Context* outer)
 {
 	if (gContextFreeList == nullptr)
 	{
@@ -912,8 +941,16 @@ void compare(Item pair, Context* context, std::function<void(Item)> k)
 				{
 				case eNumber:
 					k(Item((first.mNumber == second.mNumber) ? 1 : 0));
+					break;
 				case eSymbol:
 					k(Item((first.mSymbol == second.mSymbol) ? 1 : 0));
+					break;
+				case eCell:
+					k(Item((first.mCell == second.mCell) ? 1 : 0));
+					break;
+				case eProc:
+					k(Item( (first.mProc == second.mProc) ? 1: 0));
+					break;
 				default:
 					k(Item(0));
 				}
@@ -1049,6 +1086,10 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			{
 				k(Item(cdr(item).mCell, context));
 			}
+			else if (symbol == gSymbolTable.GetSymbol("callcc"))
+			{
+				//Item cc([k](Item item, Context*, std::function<void(Item)> ){ k(item); });
+			}
 			else
 			{
 				eval(car(item), context, [item, k, context](Item proc){
@@ -1062,7 +1103,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 					}
 					else
 					{
-						Cell* params = car(Item(proc.mProc.mProc)).mCell;
+						auto params = car(Item(proc.mProc.mProc));
 						auto body = car(cdr(Item(proc.mProc.mProc)));
 						mapeval(cdr(item), context, [context, params, proc, body, k](Item arglist){
 							auto newContext = allocContext( context, params, arglist.mCell, proc.mProc.mClosure);
@@ -1183,6 +1224,7 @@ void test_list()
 	assert(parseList(&gRootContext,"( cat )", &rest).mV.mTag == eCell);
 	assert(parseList(&gRootContext,"( cat vs unicorn )", &rest).mV.mTag == eCell);
 	assert(parseList(&gRootContext, "( Imogen loves Mummy and Daddy . xs )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext, "( first . second )", &rest).mV.mTag == eCell);
 	assert(parseList(&gRootContext,"( lambda (x) ( plus x 10 ) )", &rest).mV.mTag == eCell);
 
 	assert( length( parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV.mCell) == 3);
@@ -1235,6 +1277,7 @@ void test_eval()
 	evals_to_symbol("(if 0 'true 'false)", "false");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 1)", "true");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 0)", "false");
+	evals_to_number("((lambda x x) 10 )", 10);
 
 	char* rest;
 	auto list = parseForm(&gRootContext,"('a 'b (+ 1 2))", &rest).mV;
