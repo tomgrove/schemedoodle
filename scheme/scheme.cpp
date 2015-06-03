@@ -5,8 +5,9 @@
 #include <assert.h>
 #include <sstream>
 #include <functional>
+#include "boost\any.hpp"
 
-static bool gTrace = false;
+static bool gTrace = true;
 static bool gVerboseGC = true;
 
 template<typename T>
@@ -70,22 +71,32 @@ static SymbolTable gSymbolTable;
 struct Cell;
 struct Context;
 
-typedef enum Tag 
+/*typedef enum Tag 
 {
 	eNumber,
 	eSymbol,
 	eCell,
 	eProc,
 	eUnspecified
-};
+};*/ 
 
-struct Item;
+typedef boost::any Item;
 typedef void (*Native)(Item,Context*, std::function<void(Item)>);
 
 struct Proc {
 	Cell*		mProc;
 	Context*	mClosure;
 	Native		mNative;
+	Proc( Native native )
+		: mNative( native)
+		, mProc( nullptr )
+		, mClosure( nullptr )
+	{}
+	Proc( Cell* proc, Context* closure )
+		: mNative( nullptr )
+		, mProc( proc )
+		, mClosure( closure )
+	{}
 	bool operator==( Proc& rhs) const
 	{
 		if ( rhs.mNative) {
@@ -95,6 +106,20 @@ struct Proc {
 	}
 };
 
+struct Unspecified {};
+
+typedef int32_t		Number;
+typedef Cell*		CellRef;
+typedef uint32_t	Symbol;
+
+const type_info& eUnspecified	= typeid(Unspecified);
+const type_info& eSymbol		= typeid(Symbol);
+const type_info& eNumber		= typeid(Number);
+const type_info& eCell			= typeid(CellRef);
+const type_info& eProc			= typeid(Proc);
+
+
+/*
 struct Item {
 	union {
 		int32_t		mNumber;
@@ -133,11 +158,12 @@ struct Item {
 		: mTag(eUnspecified)
 	{}
 };
+*/
 
 static std::string print(Item item);
 
 struct Cell {
-	Cell*		mNext;
+	CellRef		mNext;
 	Item		mCar;
 	Item		mCdr;
 	bool		mReachable;
@@ -151,18 +177,18 @@ struct Cell {
 	{}
 	Cell(Item car)
 		: mCar(car)
-		, mCdr((Cell*)nullptr)
+		, mCdr((CellRef)nullptr)
 	{}
 };
 
-static Item gUnspecified;
+//static Item gUnspecified;
 
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
 void gc(Context*);
 
 struct Context {
-	std::map< uint32_t, Item >	mBindings;
+	std::map< Symbol, Item >	mBindings;
 	Context*					mOuter;
 	Context*					mNext;
 	bool						mReachable;
@@ -176,45 +202,45 @@ struct Context {
 		: mOuter(context)
 	{}
 
-	Context( Item variables, Cell* params, Context* outer)
+	Context( Item variables, CellRef params, Context* outer)
 		: mOuter(outer)
 	{
-		// x <> (a ... )
-		if (variables.mTag == eSymbol)
+		// variable is symbol: any number of arguments; arguments bound to symbol
+		if (variables.type() == eSymbol)
 		{
-			mBindings[variables.mSymbol] = Item(params);
+			mBindings[ boost::any_cast<Symbol>(variables) ] = params;
 		}
-		// (x ... ) <> ( a ... )
 		else
 		{ 
-			assert(variables.mTag == eCell);
-			Cell* variablelist = variables.mCell;
+			// variable is list
+			assert( variables.type() == eCell);
+			CellRef variablelist = boost::any_cast<CellRef>( variables );
 			while (variablelist) {
 				if (gTrace)
 				{
 					std::stringstream sstream;
-					sstream << "Binding: " << print(variablelist ->mCar) << " = " << print(params->mCar) << std::endl;
+					sstream << "Binding: " << print(variablelist->mCar) << " = " << print(params->mCar) << std::endl;
 					puts(sstream.str().c_str());
 				}
-				mBindings[variablelist->mCar.mSymbol] = params->mCar;
-				// ( x ... y z) <> ( a ... b c ) 
-				if (variablelist->mCdr.mTag == eCell)
+				mBindings[ boost::any_cast<Symbol>(variablelist->mCar) ] = params->mCar;
+				 
+				if (variablelist->mCdr.type() == eCell)
 				{
-					variablelist = variablelist->mCdr.mCell;
-					params = params->mCdr.mCell;
+					variablelist = boost::any_cast<CellRef>( variablelist->mCdr );
+					params = boost::any_cast<CellRef>( params->mCdr);
 				}
-				// ( x y . z ) <> ( a b c )
+				// pattern matching
 				else
 				{
-					assert(variablelist->mCdr.mTag == eSymbol);
-					mBindings[variablelist->mCdr.mSymbol] = Item(params->mCdr.mCell);
+					assert(variablelist->mCdr.type() == eSymbol);
+					mBindings[ boost::any_cast<Symbol>( variablelist->mCdr) ] = params->mCdr;
 					return;
 				}
 			}
 		}
 	}
 
-	Item Lookup(uint32_t symbol )
+	Item Lookup( Symbol symbol )
 	{
 		if (mBindings.find(symbol) == mBindings.end())
 		{
@@ -224,7 +250,7 @@ struct Context {
 			}
 			else
 			{
-				return gUnspecified;
+				return Unspecified();
 			}
 		}
 		return mBindings[symbol];
@@ -239,8 +265,8 @@ struct Context {
 const static uint32_t cMaxCells = 1000000;
 const static uint32_t cMaxContexts = 1000;
 
-static Cell*	   gCellFreeList;
-static Cell*	   gCellAllocList;
+static CellRef	   gCellFreeList;
+static CellRef	   gCellAllocList;
 
 static Context	   gRootContext;
 static Context*	   gContextFreeList;
@@ -283,7 +309,7 @@ Context* allocContext(Context* current, Item variables, Cell* params, Context* o
 	return new (context)Context(variables, params, outer);
 }
 
-Cell* allocCell( Context* current, Item car, Item cdr = Item((Cell*)nullptr))
+Cell* allocCell( Context* current, Item car, Item cdr = (CellRef)nullptr)
 {
 	if (gCellFreeList == nullptr)
 	{
@@ -319,14 +345,14 @@ void markCell(Cell* cell)
 	}
 
 	cell->mReachable = true;
-	if (cell->mCar.mTag == eCell && cell->mCar.mCell)
+	if (cell->mCar.type() == eCell && boost::any_cast<CellRef>( cell->mCar ))
 	{
-		markCell(cell->mCar.mCell);
+		markCell( boost::any_cast<CellRef>( cell->mCar));
 	}
 
-	if (cell->mCdr.mTag == eCell && cell->mCdr.mCell )
+	if (cell->mCdr.type() == eCell && boost::any_cast<CellRef>(cell->mCdr) )
 	{
-		markCell(cell->mCdr.mCell);
+		markCell( boost::any_cast<CellRef>( cell->mCdr));
 	}
 }
 
@@ -345,19 +371,19 @@ void markContext(Context* context)
 		{
 			printf("(%x) marking %s\n", context, gSymbolTable.GetString(pair.first).c_str());
 		}
-		if (pair.second.mTag == eCell && pair.second.mCell )
+		if (pair.second.type() == eCell && boost::any_cast<CellRef>( pair.second) )
 		{
-			markCell(pair.second.mCell);
+			markCell( boost::any_cast<CellRef>( pair.second) );
 		}
-		else if (pair.second.mTag == eProc)
+		else if (pair.second.type() == eProc)
 		{
-			if (!pair.second.mProc.mNative)
+			if (!boost::any_cast<Proc>(pair.second).mNative)
 			{
-				markCell(pair.second.mProc.mProc);
+				markCell( boost::any_cast<Proc>(pair.second).mProc);
 			}
-			if (pair.second.mProc.mClosure)
+			if ( boost::any_cast<Proc>( pair.second).mClosure)
 			{
-				markContext(pair.second.mProc.mClosure);
+				markContext( boost::any_cast<Proc>(pair.second).mClosure);
 			}
 		}
 	}
@@ -533,7 +559,7 @@ Maybe<Item> parseSymbol(char* cs, char** rest)
 			cs++;
 		}
 		*rest = cs;
-		return Maybe<Item>( Item(symbol) );
+		return Maybe<Item>(Item(gSymbolTable.GetSymbol(symbol)));
 	}
 	else
 	{
@@ -614,7 +640,7 @@ Maybe<Item> parseQuotedForm(Context* context, char*cs, char** rest)
 	Maybe<Item> item;
 	if ((item = parseForm(context, cs, rest)).mValid)
 	{
-		Cell* qcell = allocCell( context, Item("quote"), Item( allocCell( context, item.mV ) ));
+		Cell* qcell = allocCell( context, Item( gSymbolTable.GetSymbol("quote") ), Item( allocCell( context, item.mV ) ));
 		return Maybe<Item>(Item(qcell));
 	}
 
@@ -778,10 +804,6 @@ Maybe<Item> parseList(Context* context, char* cs, char** rest)
 	{
 		return item;
 	}
-/*	else if ((item = parsePair(context, cs, rest)).mValid)
-	{
-		return item;
-	} */
 	else if ((item = parseNonEmptyList(context, cs, rest)).mValid)
 	{
 		return item;
@@ -789,7 +811,7 @@ Maybe<Item> parseList(Context* context, char* cs, char** rest)
 	return Maybe<Item>();
 }
 
-uint32_t length(Cell* cell)
+uint32_t length(CellRef cell)
 {
 	if (cell == nullptr)
 	{
@@ -797,7 +819,7 @@ uint32_t length(Cell* cell)
 	}
 	else
 	{
-		return 1 + length(cell->mCdr.mCell);
+		return 1 + length( boost::any_cast<CellRef>(cell->mCdr));
 	}
 }
 
@@ -805,45 +827,47 @@ std::string print(Item item)
 {
 	std::stringstream sstream;
 
-	switch (item.mTag)
+	if (item.type() == eNumber)
 	{
-	case eNumber:
-		sstream << item.mNumber << " ";
-		break;
-	case eSymbol:
-		sstream << gSymbolTable.GetString(item.mSymbol) << " ";
-		break;
-	case eCell:
-		if (item.mCell)
+		sstream << boost::any_cast<Number>(item) << " ";
+	}
+	else if (item.type() == eSymbol)
+	{
+		sstream << gSymbolTable.GetString( boost::any_cast<Symbol>(item)) << " ";
+	}
+	else if (item.type() == eCell)
+	{
+		if (boost::any_cast<CellRef>(item))
 		{
-			sstream << "( " << print(item.mCell->mCar) << ". " << print(item.mCell->mCdr) << ") ";
+			sstream << "( " << print(boost::any_cast<CellRef>(item)->mCar) << ". " << print(boost::any_cast<CellRef>(item)->mCdr) << ") ";
 		}
 		else
 		{
 			sstream << "() ";
 		}
-		break;
-	case eProc:
-		print( Item(item.mProc.mProc));
-		break;
-	case eUnspecified:
-		sstream << "unspecified ";
-		break;
 	}
-
+	else if (item.type() == eProc)
+	{
+		print( boost::any_cast<Proc>(item).mProc);
+	}
+	else if (item.type() == eUnspecified)
+	{
+		sstream << "unspecified ";
+	}
+	
 	return sstream.str();
 }
 
 Item car(Item pair)
 {
-	assert(pair.mTag == eCell && pair.mCell != nullptr);
-	return pair.mCell->mCar;
+	assert(pair.type() == eCell && boost::any_cast<CellRef>(pair) != nullptr);
+	return boost::any_cast<CellRef>(pair)->mCar;
 }
 
 Item cdr(Item pair)
 {
-	assert(pair.mTag == eCell && pair.mCell != nullptr);
-	return pair.mCell->mCdr;
+	assert(pair.type() == eCell && boost::any_cast<CellRef>(pair) != nullptr);
+	return boost::any_cast<CellRef>(pair)->mCdr;
 }
 
 void cons(Item pair, Context* context, std::function<void(Item)> k )
@@ -857,7 +881,7 @@ void cons(Item pair, Context* context, std::function<void(Item)> k )
 void null(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [k](Item item){
-		k(Item((item.mTag == eCell &&  item.mCell == nullptr) ? 1 : 0));
+		k(Item((item.type() == eCell &&  boost::any_cast<CellRef>(item) == nullptr) ? 1 : 0));
 	});
 }
 
@@ -879,7 +903,7 @@ void mul(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval( car(cdr(pair)), context, [first,k](Item second){
-			k( Item( first.mNumber * second.mNumber ) );
+			k( Item( boost::any_cast<Number>(first) * boost::any_cast<Number>( second)  ) );
 		}); 
 	});
 }
@@ -888,7 +912,7 @@ void add(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			k(Item(first.mNumber + second.mNumber));
+			k(Item( boost::any_cast<Number>(first) + boost::any_cast<Number>(second)));
 		});
 	});
 }
@@ -897,17 +921,17 @@ void sub(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			k(Item(first.mNumber - second.mNumber));
+			k(Item( boost::any_cast<Number>(first) - boost::any_cast<Number>(second)));
 		});
 	});
 }
 
 
-void div(Item pair, Context* context, std::function<void(Item)> k)
+void bidiv(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			k(Item(first.mNumber / second.mNumber));
+			k(Item( boost::any_cast<Number>(first) / boost::any_cast<Number>(second)));
 		});
 	});
 }
@@ -917,47 +941,54 @@ void mod(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			k(Item(first.mNumber % second.mNumber));
+			k(Item( boost::any_cast<Number>(first) %  boost::any_cast<Number>(second) ));
 		});
 	});
 }
 
-void print(Item pair, Context* context, std::function<void(Item)> k)
+void biprint(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		puts(print(first).c_str());
 		putchar('\n');
-		k(gUnspecified);
+		k( Unspecified() );
 	});
+}
+
+template<typename T>
+Number compareAny(Item first, Item second)
+{
+	return (boost::any_cast<T>(first) == boost::any_cast<T>(second)) ? 1 : 0;
 }
 
 void compare(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			if (first.mTag == second.mTag)
+			// won't work...
+			if (first.type() != second.type())
 			{
-				switch (first.mTag)
-				{
-				case eNumber:
-					k(Item((first.mNumber == second.mNumber) ? 1 : 0));
-					break;
-				case eSymbol:
-					k(Item((first.mSymbol == second.mSymbol) ? 1 : 0));
-					break;
-				case eCell:
-					k(Item((first.mCell == second.mCell) ? 1 : 0));
-					break;
-				case eProc:
-					k(Item( (first.mProc == second.mProc) ? 1: 0));
-					break;
-				default:
-					k(Item(0));
-				}
+				k(0);
+			}
+			else if (first.type() == eNumber)
+			{
+				k( compareAny<Number>(first, second));
+			}
+			else if (first.type() == eProc)
+			{
+				k(compareAny<Proc>(first, second));
+			}
+			else if (first.type() == eSymbol)
+			{
+				k(compareAny<Symbol>(first, second));
+			}
+			else if (first.type() == eCell)
+			{
+				k(compareAny<CellRef>(first, second));
 			}
 			else
 			{
-				k(Item(0));
+				k(0);
 			}
 		}); 
 	});
@@ -972,14 +1003,14 @@ void yield(std::function<void(void)> k)
 
 void mapeval(Item in, Context* context, std::function<void(Item)> k )
 {
-	if ( in.mCell == nullptr)
+	if ( boost::any_cast<CellRef>(in) == nullptr)
 	{
 		k(Item((Cell*)nullptr));
 	}
 	else
 	{
-		eval(in.mCell->mCar, context, [in, context,k](Item result){
-			mapeval(in.mCell->mCdr, context, [context,result,k](Item rest){
+		eval( boost::any_cast<CellRef>(in)->mCar, context, [in, context,k](Item result){
+			mapeval( boost::any_cast<CellRef>(in)->mCdr, context, [context,result,k](Item rest){
 				k(Item( allocCell(context, result, rest)));
 			});
 		});
@@ -993,23 +1024,24 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 	{
 		printf("eval: %s\n", print(item).c_str());
 	}
-	switch (item.mTag)
+	
+	if (item.type() == eNumber)
 	{
-	case eNumber:
 		k(item);
-		break;
-	case eSymbol:
-		k(context->Lookup(item.mSymbol));
-		break;
-	case eCell:
+	}
+	else if (item.type() == eSymbol)
 	{
-		if (!item.mCell)
+		k(context->Lookup( boost::any_cast<Symbol>(item)));
+	}
+	else if (item.type() == eCell)
+	{
+		if ( !boost::any_cast<CellRef>( item ) )
 		{
 			k(item);
 		}
 		else
 		{
-			uint32_t symbol = car(item).mSymbol;
+			Symbol symbol = boost::any_cast<Symbol>( car(item) );
 			if (symbol == gSymbolTable.GetSymbol("quote"))
 			{
 				k(car(cdr(item)));
@@ -1018,73 +1050,69 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			{
 				Item value, name, params;
 				params = car(cdr(item));
-				switch (params.mTag)
-				{
+			
 					// (define x ...)
-					case eSymbol:
+					if ( params.type() == eSymbol )
 					{
 						name = car(cdr(item));
 
 						// (define x y )
-						if (length(item.mCell) == 3)
+						if (length( boost::any_cast<CellRef>( item)) == 3)
 						{
 							eval(car(cdr(cdr(item))), context, [name, context, k](Item value){
-								context->Set(name.mSymbol, value);
+								context->Set( boost::any_cast<Symbol>(name), value);
 								k(value);
 							});
 						}
 						// (define x )
 						else
 						{
-							context->Set(name.mSymbol, gUnspecified);
-							k(gUnspecified);
+							context->Set( boost::any_cast<Symbol>(name), Unspecified());
+							k(Unspecified());
 						}
-						break;
 					}
 					// (define (f ...) (body))
-					case eCell:
+					else if ( params.type() == eCell )
 					{
 						name = car(params);
 						auto arglist = cdr(params);
 						auto body = car(cdr(cdr(item)));
 
 						value = Item(allocCell(context, arglist, Item(allocCell(context, body))), context);
-						context->Set(name.mSymbol, value);
+						context->Set( boost::any_cast<Symbol>(name), value);
 						k(value);
-						break;
 					}
-					default:
+					else
 					{
 						puts("&invalid-define");
 					}
 				}
-			}
 			else if (symbol == gSymbolTable.GetSymbol("set!"))
 			{
 				eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ 
-					context->Set(car(cdr(item)).mSymbol, v); k(v); 
+					context->Set( boost::any_cast<Symbol>(car(cdr(item))), v); k(v); 
 				});
 			}
 			else if (symbol == gSymbolTable.GetSymbol("if"))
 			{
 				eval(car(cdr(item)), context, [item, context, k](Item b){
-					if (b.mNumber)
+					if ( boost::any_cast<Number>(b) )
 					{
 						eval(car(cdr(cdr(item))), context, k);
 					}
-					else if (length(item.mCell) > 3)
+					else if (length( boost::any_cast<CellRef>(item)) > 3)
 					{
 						eval(car(cdr(cdr(cdr(item)))), context, k);
 					}
 					else
 					{
-						k(gUnspecified);
+						k(Unspecified());
 					}
 				});
 			}
 			else if (symbol == gSymbolTable.GetSymbol("lambda"))
 			{
-				k(Item(cdr(item).mCell, context));
+				k( Proc( boost::any_cast<CellRef>( cdr(item)), context));
 			}
 			else if (symbol == gSymbolTable.GetSymbol("callcc"))
 			{
@@ -1093,20 +1121,20 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			else
 			{
 				eval(car(item), context, [item, k, context](Item proc){
-					if ( proc.mTag != eProc )
+					if ( proc.type() != eProc )
 					{
 						puts("&did-not-eval-to-proc\n");
 					}
-					else if (proc.mProc.mNative)
+					else if ( boost::any_cast<Proc>( proc ).mNative)
 					{
-						(proc.mProc.mNative)(Item(cdr(item).mCell), context, k);
+						( boost::any_cast<Proc>( proc).mNative)(Item( boost::any_cast<CellRef>( cdr(item) )), context, k);
 					}
 					else
 					{
-						auto params = car(Item(proc.mProc.mProc));
-						auto body = car(cdr(Item(proc.mProc.mProc)));
+						auto params = car(Item( boost::any_cast<Proc>( proc ).mProc));
+						auto body = car(cdr(Item( boost::any_cast<Proc>( proc).mProc)));
 						mapeval(cdr(item), context, [context, params, proc, body, k](Item arglist){
-							auto newContext = allocContext( context, params, arglist.mCell, proc.mProc.mClosure);
+							auto newContext = allocContext(context, params, boost::any_cast<CellRef>( arglist ), boost::any_cast<Proc>(proc).mClosure);
 							yield([body, newContext, k](){ eval(body, newContext, k);});
 						});
 					}
@@ -1114,26 +1142,25 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			}
 		}
 	}
-	break;
-		// fall through
-	default:
-		k(gUnspecified);
+	else
+	{
+		k(Unspecified());
 	}
 }
 
 void addNativeFns()
 {
-	gRootContext.Set(gSymbolTable.GetSymbol("cons"), Item(cons));
-	gRootContext.Set(gSymbolTable.GetSymbol("car"), Item(carProc));
-	gRootContext.Set(gSymbolTable.GetSymbol("cdr"), Item(cdrProc));
-	gRootContext.Set(gSymbolTable.GetSymbol("="), Item(compare));
-	gRootContext.Set(gSymbolTable.GetSymbol("null?"), Item(null));
-	gRootContext.Set(gSymbolTable.GetSymbol("+"), Item(add));
-	gRootContext.Set(gSymbolTable.GetSymbol("-"), Item(sub));
-	gRootContext.Set(gSymbolTable.GetSymbol("*"), Item(mul));
-	gRootContext.Set(gSymbolTable.GetSymbol("/"), Item(div));
-	gRootContext.Set(gSymbolTable.GetSymbol("%"), Item(mod));
-	gRootContext.Set(gSymbolTable.GetSymbol("print"), Item(print));
+	gRootContext.Set(gSymbolTable.GetSymbol("cons"), Item( Proc(cons) ));
+	gRootContext.Set(gSymbolTable.GetSymbol("car"), Item( Proc(carProc) ));
+	gRootContext.Set(gSymbolTable.GetSymbol("cdr"), Item( Proc( cdrProc) ));
+	gRootContext.Set(gSymbolTable.GetSymbol("="), Item( Proc( compare )));
+	gRootContext.Set(gSymbolTable.GetSymbol("null?"), Item( Proc(null)));
+	gRootContext.Set(gSymbolTable.GetSymbol("+"), Item( Proc(add) ));
+	gRootContext.Set(gSymbolTable.GetSymbol("-"), Item( Proc( sub )));
+	gRootContext.Set(gSymbolTable.GetSymbol("*"), Item( Proc(mul)));
+	gRootContext.Set(gSymbolTable.GetSymbol("/"), Item( Proc(bidiv)));
+	gRootContext.Set(gSymbolTable.GetSymbol("%"), Item( Proc(mod)));
+	gRootContext.Set(gSymbolTable.GetSymbol("print"), Item( Proc(biprint)));
 }
 
 void tcoeval(Item form, Context* context, std::function<void(Item)> k)
@@ -1171,12 +1198,12 @@ void repl()
 void test_numbers()
 { 
 	char* rest;
-	assert((parseNumber("10",&rest)).mV.mNumber == 10);
-	assert((parseNumber("0", &rest)).mV.mNumber == 0);
-	assert((parseNumber("-0", &rest)).mV.mNumber == 0);
+	assert(boost::any_cast<Number>((parseNumber("10",&rest)).mV) == 10);
+	assert(boost::any_cast<Number>((parseNumber("0", &rest)).mV) == 0);
+	assert(boost::any_cast<Number>((parseNumber("-0", &rest)).mV) == 0);
 	assert((parseNumber("", &rest)).mValid == false);
-	assert((parseNumber("100", &rest)).mV.mNumber == 100);
-	assert((parseNumber("-123", &rest)).mV.mNumber == -123);
+	assert(boost::any_cast<Number>((parseNumber("100", &rest)).mV) == 100);
+	assert(boost::any_cast<Number>((parseNumber("-123", &rest)).mV) == -123);
 	assert((parseNumber("cat", &rest)).mValid == false);
 }
 
@@ -1206,13 +1233,13 @@ void test_symbols()
 
 	assert(symbols.GetString(id0) == "cat");
 
-	assert( gSymbolTable.GetString( parseSymbol("cat", &rest).mV.mSymbol) == "cat");
+	assert( gSymbolTable.GetString( boost::any_cast<Symbol>( parseSymbol("cat", &rest).mV)) == "cat");
 	assert(*rest == '\0');
 
-	assert( gSymbolTable.GetString( parseSymbol("this-is-a-symbol", &rest).mV.mSymbol ) == "this-is-a-symbol");
+	assert( gSymbolTable.GetString( boost::any_cast<Symbol>( parseSymbol("this-is-a-symbol", &rest).mV) ) == "this-is-a-symbol");
 	assert( parseSymbol("0this-is-not-a-symbol", &rest).mValid == false);
-	assert( gSymbolTable.GetString( parseSymbol("several symbols", &rest).mV.mSymbol ) == "several");
-	assert( gSymbolTable.GetString( parseSymbol("UniCorn5", &rest).mV.mSymbol) == "UniCorn5");
+	assert( gSymbolTable.GetString( boost::any_cast<Symbol>(parseSymbol("several symbols", &rest).mV) ) == "several");
+	assert( gSymbolTable.GetString( boost::any_cast<Symbol>( parseSymbol("UniCorn5", &rest).mV)) == "UniCorn5");
 }
 
 void test_list()
@@ -1220,16 +1247,16 @@ void test_list()
 	char* rest;
 	assert(parseList(&gRootContext,"()",&rest).mValid);
 	assert(parseList(&gRootContext,"(    )", &rest).mValid);
-	assert(parseList(&gRootContext,"()", &rest).mV.mTag == eCell);
-	assert(parseList(&gRootContext,"( cat )", &rest).mV.mTag == eCell);
-	assert(parseList(&gRootContext,"( cat vs unicorn )", &rest).mV.mTag == eCell);
-	assert(parseList(&gRootContext, "( Imogen loves Mummy and Daddy . xs )", &rest).mV.mTag == eCell);
-	assert(parseList(&gRootContext, "( first . second )", &rest).mV.mTag == eCell);
-	assert(parseList(&gRootContext,"( lambda (x) ( plus x 10 ) )", &rest).mV.mTag == eCell);
+	assert(parseList(&gRootContext,"()", &rest).mV.type() == eCell);
+	assert(parseList(&gRootContext,"( cat )", &rest).mV.type() == eCell);
+	assert(parseList(&gRootContext,"( cat vs unicorn )", &rest).mV.type() == eCell);
+	assert(parseList(&gRootContext, "( Imogen loves Mummy and Daddy . xs )", &rest).mV.type() == eCell);
+	assert(parseList(&gRootContext, "( first . second )", &rest).mV.type() == eCell);
+	assert(parseList(&gRootContext,"( lambda (x) ( plus x 10 ) )", &rest).mV.type() == eCell);
 
-	assert( length( parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV.mCell) == 3);
-	assert( length(parseList(&gRootContext,"( Maddy loves ( horses and unicorns) )", &rest).mV.mCell) == 3);
-	assert(length(parseList(&gRootContext,"( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV.mCell) == 3);
+	assert(length(boost::any_cast<CellRef>( parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV)) == 3);
+	assert(length(boost::any_cast<CellRef>( parseList(&gRootContext, "( Maddy loves ( horses and unicorns) )", &rest).mV)) == 3);
+	assert(length(boost::any_cast<CellRef>( parseList(&gRootContext,"( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV)) == 3);
 	assert(!parseList(&gRootContext,"( Maddy loves ", &rest).mValid);
 }
 
@@ -1247,8 +1274,8 @@ void evals_to_number(char* datum, int32_t value, Context* context = &gRootContex
 	auto item = parseForm(context, datum, &rest);
 	assert(item.mValid);
 	tcoeval(item.mV, context, [value](Item result) {
-		assert(result.mTag == eNumber);
-		assert(result.mNumber == value);
+		assert(result.type() == eNumber);
+		assert( boost::any_cast<Number>(result) == value);
 	});
 }
 
@@ -1258,8 +1285,8 @@ void evals_to_symbol(char* datum, const char* symbol, Context* context = &gRootC
 	auto item = parseForm(context,datum, &rest);
 	assert(item.mValid);
 	tcoeval(item.mV, context, [symbol](Item result) {
-		assert(result.mTag == eSymbol);
-		assert(result.mSymbol == gSymbolTable.GetSymbol(symbol));
+		assert(result.type() == eSymbol);
+		assert( boost::any_cast<Symbol>( result ) == gSymbolTable.GetSymbol(symbol));
 	});
 }
 
@@ -1318,9 +1345,22 @@ void test_context()
 	tcoeval(parseForm(context,"(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
 }
 
+void test_any()
+{
+	boost::any  typeless = boost::any( 10.0 );
+	assert(typeless.type() == typeid(double));
+
+	typeless = std::function<void()>();
+	assert(typeless.type() == typeid(std::function<void()>));
+
+	auto f = boost::any_cast<std::function<void()>>(typeless);
+	assert(typeid(f) == typeid(std::function<void()>));
+}
 
 int main(int argc, char* argv[])
 {
+	test_any();
+
 	allocFreeLists();
 	addNativeFns();
 
