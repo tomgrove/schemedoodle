@@ -41,3 +41,14 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+/boost_1_58_0/boost/accumulators
+/boost_1_58_0/boost/algorithm
+/boost_1_58_0/boost/align
+/boost_1_58_0/boost/archive
+/boost_1_58_0/boost/asio
+/boost_1_58_0/boost/assign
+/boost_1_58_0/boost/atomic
+/boost_1_58_0/boost/bimap
+/boost_1_58_0/boost/bind
+/boost_1_58_0/boost/chrono
+/boost_1_58_0/boost/circular_buffer
