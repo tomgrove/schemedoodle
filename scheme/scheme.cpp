@@ -69,16 +69,7 @@ struct SymbolTable {
 static SymbolTable gSymbolTable;
 
 struct Cell;
-struct Context;
-
-/*typedef enum Tag 
-{
-	eNumber,
-	eSymbol,
-	eCell,
-	eProc,
-	eUnspecified
-};*/ 
+struct Context; 
 
 typedef boost::any Item;
 typedef void (*Native)(Item,Context*, std::function<void(Item)>);
@@ -117,48 +108,6 @@ const type_info& eSymbol		= typeid(Symbol);
 const type_info& eNumber		= typeid(Number);
 const type_info& eCell			= typeid(CellRef);
 const type_info& eProc			= typeid(Proc);
-
-
-/*
-struct Item {
-	union {
-		int32_t		mNumber;
-		uint32_t    mSymbol;
-		Proc		mProc;
-		Cell*		mCell;
-	};
-	Tag				mTag;
-	explicit Item(int32_t number)
-		: mNumber(number)
-		, mTag(eNumber)
-	{}
-	explicit Item(std::string symbol)
-		: mSymbol(gSymbolTable.GetSymbol(symbol))
-		, mTag(eSymbol)
-	{}
-	explicit Item(Cell* cell)
-		: mCell(cell)
-		, mTag(eCell)
-	{}
-	Item(Cell * proc, Context* context)
-		: mTag(eProc)
-	{
-		mProc.mProc = proc;
-		mProc.mClosure = context;
-		mProc.mNative = nullptr;
-	}
-	explicit Item(Native native)
-		: mTag(eProc)
-	{
-		mProc.mProc = nullptr;
-		mProc.mClosure = nullptr;
-		mProc.mNative = native;
-	}
-	Item()
-		: mTag(eUnspecified)
-	{}
-};
-*/
 
 static std::string print(Item item);
 
