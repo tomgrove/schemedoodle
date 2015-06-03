@@ -7,7 +7,7 @@
 #include <functional>
 #include "boost\any.hpp"
 
-static bool gTrace = true;
+static bool gTrace = false;
 static bool gVerboseGC = true;
 
 template<typename T>
@@ -1049,7 +1049,7 @@ void eval_define(Item item, Context* context, std::function<void(Item)> k)
 		auto arglist = cdr(params);
 		auto body = car(cdr(cdr(item)));
 
-		value = Item(allocCell(context, arglist, Item(allocCell(context, body))), context);
+		value = Proc(allocCell(context, arglist, Item(allocCell(context, body))), context);
 		context->Set(boost::any_cast<Symbol>(name), value);
 		k(value);
 	}
