@@ -972,7 +972,7 @@ void compare(Item pair, Context* context, std::function<void(Item)> k)
 			}
 			else if (first.type() == eNumber)
 			{
-				k( compareAny<Number>(first, second));
+				k(compareAny<Number>(first, second));
 			}
 			else if (first.type() == eProc)
 			{
@@ -990,7 +990,7 @@ void compare(Item pair, Context* context, std::function<void(Item)> k)
 			{
 				k(0);
 			}
-		}); 
+		});
 	});
 }
 
@@ -1001,20 +1001,103 @@ void yield(std::function<void(void)> k)
 	gNext = k;
 }
 
-void mapeval(Item in, Context* context, std::function<void(Item)> k )
+void mapeval(Item in, Context* context, std::function<void(Item)> k)
 {
-	if ( boost::any_cast<CellRef>(in) == nullptr)
+	if (boost::any_cast<CellRef>(in) == nullptr)
 	{
 		k(Item((Cell*)nullptr));
 	}
 	else
 	{
-		eval( boost::any_cast<CellRef>(in)->mCar, context, [in, context,k](Item result){
-			mapeval( boost::any_cast<CellRef>(in)->mCdr, context, [context,result,k](Item rest){
-				k(Item( allocCell(context, result, rest)));
+		eval(boost::any_cast<CellRef>(in)->mCar, context, [in, context, k](Item result){
+			mapeval(boost::any_cast<CellRef>(in)->mCdr, context, [context, result, k](Item rest){
+				k(Item(allocCell(context, result, rest)));
 			});
 		});
 	}
+}
+
+void eval_define(Item item, Context* context, std::function<void(Item)> k)
+{
+	Item value, name, params;
+	params = car(cdr(item));
+
+	// (define x ...)
+	if (params.type() == eSymbol)
+	{
+		name = car(cdr(item));
+
+		// (define x y )
+		if (length(boost::any_cast<CellRef>(item)) == 3)
+		{
+			eval(car(cdr(cdr(item))), context, [name, context, k](Item value){
+				context->Set(boost::any_cast<Symbol>(name), value);
+				k(value);
+			});
+		}
+		// (define x )
+		else
+		{
+			context->Set(boost::any_cast<Symbol>(name), Unspecified());
+			k(Unspecified());
+		}
+	}
+	// (define (f ...) (body))
+	else if (params.type() == eCell)
+	{
+		name = car(params);
+		auto arglist = cdr(params);
+		auto body = car(cdr(cdr(item)));
+
+		value = Item(allocCell(context, arglist, Item(allocCell(context, body))), context);
+		context->Set(boost::any_cast<Symbol>(name), value);
+		k(value);
+	}
+	else
+	{
+		puts("&invalid-define");
+	}
+}
+
+void eval_if(Item item, Context* context, std::function<void(Item)> k )
+{
+	eval(car(cdr(item)), context, [item, context, k](Item b){
+		if (boost::any_cast<Number>(b))
+		{
+			eval(car(cdr(cdr(item))), context, k);
+		}
+		else if (length(boost::any_cast<CellRef>(item)) > 3)
+		{
+			eval(car(cdr(cdr(cdr(item)))), context, k);
+		}
+		else
+		{
+			k(Unspecified());
+		}
+	});
+}
+
+void eval_proc(Item item, Context* context, std::function<void(Item)> k)
+{
+	eval(car(item), context, [item, k, context](Item proc){
+		if (proc.type() != eProc)
+		{
+			puts("&did-not-eval-to-proc\n");
+		}
+		else if (boost::any_cast<Proc>(proc).mNative)
+		{
+			(boost::any_cast<Proc>(proc).mNative)(Item(boost::any_cast<CellRef>(cdr(item))), context, k);
+		}
+		else
+		{
+			auto params = car(Item(boost::any_cast<Proc>(proc).mProc));
+			auto body = car(cdr(Item(boost::any_cast<Proc>(proc).mProc)));
+			mapeval(cdr(item), context, [context, params, proc, body, k](Item arglist){
+				auto newContext = allocContext(context, params, boost::any_cast<CellRef>(arglist), boost::any_cast<Proc>(proc).mClosure);
+				yield([body, newContext, k](){ eval(body, newContext, k); });
+			});
+		}
+	});
 }
 
 void eval(Item item, Context* context, std::function<void(Item)> k )
@@ -1039,7 +1122,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 		{
 			k(item);
 		}
-		else
+		else if (car(item).type() == eSymbol )
 		{
 			Symbol symbol = boost::any_cast<Symbol>( car(item) );
 			if (symbol == gSymbolTable.GetSymbol("quote"))
@@ -1048,45 +1131,8 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			}
 			else if (symbol == gSymbolTable.GetSymbol("define"))
 			{
-				Item value, name, params;
-				params = car(cdr(item));
-			
-					// (define x ...)
-					if ( params.type() == eSymbol )
-					{
-						name = car(cdr(item));
-
-						// (define x y )
-						if (length( boost::any_cast<CellRef>( item)) == 3)
-						{
-							eval(car(cdr(cdr(item))), context, [name, context, k](Item value){
-								context->Set( boost::any_cast<Symbol>(name), value);
-								k(value);
-							});
-						}
-						// (define x )
-						else
-						{
-							context->Set( boost::any_cast<Symbol>(name), Unspecified());
-							k(Unspecified());
-						}
-					}
-					// (define (f ...) (body))
-					else if ( params.type() == eCell )
-					{
-						name = car(params);
-						auto arglist = cdr(params);
-						auto body = car(cdr(cdr(item)));
-
-						value = Item(allocCell(context, arglist, Item(allocCell(context, body))), context);
-						context->Set( boost::any_cast<Symbol>(name), value);
-						k(value);
-					}
-					else
-					{
-						puts("&invalid-define");
-					}
-				}
+				eval_define(item, context, k);
+			}
 			else if (symbol == gSymbolTable.GetSymbol("set!"))
 			{
 				eval(car(cdr(cdr(item))), context, [context, item, k](Item v){ 
@@ -1095,20 +1141,7 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			}
 			else if (symbol == gSymbolTable.GetSymbol("if"))
 			{
-				eval(car(cdr(item)), context, [item, context, k](Item b){
-					if ( boost::any_cast<Number>(b) )
-					{
-						eval(car(cdr(cdr(item))), context, k);
-					}
-					else if (length( boost::any_cast<CellRef>(item)) > 3)
-					{
-						eval(car(cdr(cdr(cdr(item)))), context, k);
-					}
-					else
-					{
-						k(Unspecified());
-					}
-				});
+				eval_if(item, context, k);
 			}
 			else if (symbol == gSymbolTable.GetSymbol("lambda"))
 			{
@@ -1120,26 +1153,12 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			}
 			else
 			{
-				eval(car(item), context, [item, k, context](Item proc){
-					if ( proc.type() != eProc )
-					{
-						puts("&did-not-eval-to-proc\n");
-					}
-					else if ( boost::any_cast<Proc>( proc ).mNative)
-					{
-						( boost::any_cast<Proc>( proc).mNative)(Item( boost::any_cast<CellRef>( cdr(item) )), context, k);
-					}
-					else
-					{
-						auto params = car(Item( boost::any_cast<Proc>( proc ).mProc));
-						auto body = car(cdr(Item( boost::any_cast<Proc>( proc).mProc)));
-						mapeval(cdr(item), context, [context, params, proc, body, k](Item arglist){
-							auto newContext = allocContext(context, params, boost::any_cast<CellRef>( arglist ), boost::any_cast<Proc>(proc).mClosure);
-							yield([body, newContext, k](){ eval(body, newContext, k);});
-						});
-					}
-				});
+				eval_proc(item, context, k);
 			}
+		}
+		else
+		{
+			eval_proc(item, context, k);
 		}
 	}
 	else
