@@ -8,7 +8,7 @@
 #include "boost\any.hpp"
 
 static bool gTrace = false;
-static bool gVerboseGC = true;
+static bool gVerboseGC = false;
 
 template<typename T>
 struct Maybe
@@ -957,6 +957,26 @@ void eval_begin(Item body, Context* context, std::function<void(Item)> k)
 	}
 }
 
+void eval_letstar_rec(Item defs, Context* context, std::function<void(Context*)> k)
+{
+	if (!boost::any_cast<CellRef>(defs))
+	{
+		k( context);
+	}
+	else
+	{
+		Item defpair = car(defs);
+		Item symbol = car(defpair);
+		Item def = car(cdr(defpair));
+		auto newcontext = allocContext( context, context);
+		eval(def, context, [newcontext, context, defs, k](Item item){
+			Symbol symbol = boost::any_cast<Symbol>(car(car(defs)));
+			newcontext->Set(symbol, item);
+			eval_letstar_rec(cdr(defs), newcontext, k);
+		});
+	}
+}
+
 void eval_let_rec(Item defs, Context* evalcontext, Context* defcontext, std::function<void(Context*)> k)
 {
 	if (!boost::any_cast<CellRef>(defs))
@@ -978,11 +998,21 @@ void eval_let_rec(Item defs, Context* evalcontext, Context* defcontext, std::fun
 
 void eval_let(Item item, Context* context, std::function<void(Item)> k)
 {
+	// (let ((x <def>)* ) <body>) 
+	Symbol let = boost::any_cast<Symbol>(car(item));
 	Item defs = car(cdr(item));
 	Item body = car(cdr(cdr(item)));
 	auto newContext = allocContext(context,context);
-	eval_let_rec(defs, context, newContext, [body, k](Context* c){ eval(body, c, k); });
+	if ( let== gSymbolTable.GetSymbol("let"))
+	{
+		eval_let_rec(defs, context, newContext, [body, k](Context* c){ eval(body, c, k); });
+	}
+	else if ( let == gSymbolTable.GetSymbol("let*"))
+	{
+		eval_letstar_rec(defs, context, [body, k](Context* c){ eval(body, c, k); });
+	}
 }
+
 
 void eval_define(Item item, Context* context, std::function<void(Item)> k)
 {
@@ -1118,7 +1148,8 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			{
 				//Item cc([k](Item item, Context*, std::function<void(Item)> ){ k(item); });
 			}
-			else if (symbol == gSymbolTable.GetSymbol("let"))
+			else if (symbol == gSymbolTable.GetSymbol("let")|| 
+				     symbol == gSymbolTable.GetSymbol("let*"))
 			{
 				eval_let(item, context, k);
 			}
@@ -1302,8 +1333,9 @@ void test_eval()
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 0)", "false");
 	//evals_to_number("((lambda x x) 10 )", 10);
 	evals_to_number("( let ((x 5)) x )", 5);
-	evals_to_number("( let ((x 5) (y 2) ) (+ x y ) )", 7);
-	evals_to_number("( begin ((set! something 10) something))", 10);
+	evals_to_number("( let ((x 5) (y 2)) (+ x y ) )", 7);
+	evals_to_number("(let* ((x 5) (y x)) (+ x y) )", 10);
+	evals_to_number("( begin (set! something 10) something)", 10);
 	char* rest;
 	auto list = parseForm(&gRootContext,"('a 'b (+ 1 2))", &rest).mV;
 	mapeval(list, &gRootContext, [](Item item){ puts(print(item).c_str()); });
