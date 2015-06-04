@@ -247,6 +247,22 @@ void allocFreeLists()
 	gContextAllocList = &gRootContext;
 }
 
+Context* allocContext(Context* current, Context* outer)
+{
+	if (gContextFreeList == nullptr)
+	{
+		gc(current);
+		assert(gContextFreeList);
+	}
+
+	auto next = gContextFreeList->mNext;
+	auto context = new (gContextFreeList)Context( outer);
+	gContextFreeList = next;
+	context->mNext = gContextAllocList;
+	gContextAllocList = context;
+	return context;
+}
+
 Context* allocContext(Context* current, Item variables, Cell* params, Context* outer)
 {
 	if( gContextFreeList == nullptr )
@@ -929,6 +945,45 @@ void mapeval(Item in, Context* context, std::function<void(Item)> k)
 	}
 }
 
+void eval_begin(Item body, Context* context, std::function<void(Item)> k)
+{
+	if (!boost::any_cast<CellRef>(cdr(body)))
+	{
+		eval(car(body), context, k);
+	}
+	else
+	{
+		eval(car(body), context, [body, context, k](Item){ eval_begin(cdr(body), context, k); });
+	}
+}
+
+void eval_let_rec(Item defs, Context* evalcontext, Context* defcontext, std::function<void(Context*)> k)
+{
+	if (!boost::any_cast<CellRef>(defs))
+	{
+		k(defcontext);
+	}
+	else
+	{
+		Item defpair = car(defs);
+		Item symbol = car(defpair);
+		Item def = car(cdr(defpair));
+		eval(def, evalcontext, [defcontext, evalcontext,defs,k](Item item){
+			Symbol symbol = boost::any_cast<Symbol>(car(car(defs)));
+			defcontext->Set( symbol, item);
+			eval_let_rec(cdr(defs), evalcontext, defcontext, k);
+		});
+	}
+}
+
+void eval_let(Item item, Context* context, std::function<void(Item)> k)
+{
+	Item defs = car(cdr(item));
+	Item body = car(cdr(cdr(item)));
+	auto newContext = allocContext(context,context);
+	eval_let_rec(defs, context, newContext, [body, k](Context* c){ eval(body, c, k); });
+}
+
 void eval_define(Item item, Context* context, std::function<void(Item)> k)
 {
 	Item value, name, params;
@@ -1062,6 +1117,14 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			else if (symbol == gSymbolTable.GetSymbol("callcc"))
 			{
 				//Item cc([k](Item item, Context*, std::function<void(Item)> ){ k(item); });
+			}
+			else if (symbol == gSymbolTable.GetSymbol("let"))
+			{
+				eval_let(item, context, k);
+			}
+			else if (symbol == gSymbolTable.GetSymbol("begin"))
+			{
+				eval_begin(cdr(item), context, k);
 			}
 			else
 			{
@@ -1238,7 +1301,9 @@ void test_eval()
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 1)", "true");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 0)", "false");
 	//evals_to_number("((lambda x x) 10 )", 10);
-
+	evals_to_number("( let ((x 5)) x )", 5);
+	evals_to_number("( let ((x 5) (y 2) ) (+ x y ) )", 7);
+	evals_to_number("( begin ((set! something 10) something))", 10);
 	char* rest;
 	auto list = parseForm(&gRootContext,"('a 'b (+ 1 2))", &rest).mV;
 	mapeval(list, &gRootContext, [](Item item){ puts(print(item).c_str()); });
