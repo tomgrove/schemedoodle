@@ -914,7 +914,7 @@ void compare(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
 		eval(car(cdr(pair)), context, [first, k](Item second){
-			// won't work...
+		
 			if (first.type() != second.type())
 			{
 				k(0);
