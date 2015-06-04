@@ -72,7 +72,8 @@ struct Cell;
 struct Context; 
 
 typedef boost::any Item;
-typedef void (*Native)(Item,Context*, std::function<void(Item)>);
+//typedef void (*Native)(Item,Context*, std::function<void(Item)>);
+typedef std::function<void(Item, Context*, std::function<void(Item)>)> Native;
 
 struct Proc {
 	Cell*		mProc;
@@ -91,7 +92,7 @@ struct Proc {
 	bool operator==( Proc& rhs) const
 	{
 		if ( rhs.mNative) {
-			return this->mNative == rhs.mNative;
+			return false;
 		} 
 		return this->mProc == rhs.mProc;
 	}
@@ -776,7 +777,14 @@ std::string print(Item item)
 	}
 	else if (item.type() == eProc)
 	{
-		print( boost::any_cast<Proc>(item).mProc);
+		if (boost::any_cast<Proc>(item).mProc)
+		{
+			sstream << "proc";
+		}
+		else
+		{
+			sstream << "native proc or continuation";
+		}
 	}
 	else if (item.type() == eUnspecified)
 	{
@@ -1146,7 +1154,15 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			}
 			else if (symbol == gSymbolTable.GetSymbol("callcc"))
 			{
-				//Item cc([k](Item item, Context*, std::function<void(Item)> ){ k(item); });
+				Item cc = Proc([k](Item item, Context*, std::function<void(Item)> ){ 
+					k(car(item)); 
+				});
+				context->Set(boost::any_cast<Symbol>(car(cdr(item))), cc);
+				eval(car(cdr(cdr(item))), context, [](Item item){
+					auto s = print(item);
+					puts(s.c_str());
+					putchar(' cc\n');
+				});
 			}
 			else if (symbol == gSymbolTable.GetSymbol("let")|| 
 				     symbol == gSymbolTable.GetSymbol("let*"))
