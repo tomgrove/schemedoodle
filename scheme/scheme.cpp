@@ -1154,8 +1154,10 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 			}
 			else if (symbol == gSymbolTable.GetSymbol("callcc"))
 			{
-				Item cc = Proc([k](Item item, Context*, std::function<void(Item)> ){ 
-					k(car(item)); 
+				Item cc = Proc([k](Item item, Context* c, std::function<void(Item)>){
+					eval(car(item), c, [k](Item e) {
+						k(e);
+					});
 				});
 				context->Set(boost::any_cast<Symbol>(car(cdr(item))), cc);
 				eval(car(cdr(cdr(item))), context, [](Item item){
@@ -1389,6 +1391,13 @@ void test_context()
 				   "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context, [](Item item){});
 
 	tcoeval(parseForm(context,"(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
+
+	evals_to_number("(begin "
+					 "(define ( f x ) (" 
+						"callcc ret ( if (= x 10) (ret x)" 
+												    "( f (+ 1 x)))))" 
+					  "(f 0))"
+					  , 10);
 }
 
 void test_any()
