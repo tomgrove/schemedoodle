@@ -42,11 +42,11 @@ typedef int32_t					Number;
 typedef Cell*					CellRef;
 typedef uint32_t				Symbol;
 
-const type_info& eUnspecified	= typeid(Unspecified);
-const type_info& eSymbol		= typeid(Symbol);
-const type_info& eNumber		= typeid(Number);
-const type_info& eCell			= typeid(CellRef);
-const type_info& eProc			= typeid(Proc);
+extern const type_info& eUnspecified;// = typeid(Unspecified);
+extern const type_info& eSymbol;// = typeid(Symbol);
+extern const type_info& eNumber;// = typeid(Number);
+extern const type_info& eCell;// = typeid(CellRef);
+extern const type_info& eProc;// = typeid(Proc);
 
 struct Cell : public Collectable<Cell>
 {

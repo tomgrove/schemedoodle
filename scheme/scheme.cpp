@@ -9,70 +9,13 @@
 #include "schemetypes.h"
 #include "collectable.h"
 #include "context.h"
+#include "maybe.h"
+#include "symboltable.h"
 
 bool gTrace = false;
 bool gVerboseGC = false;
 
-template<typename T>
-struct Maybe
-{
-	Maybe(T v)
-		: mV(v)
-		, mValid(true)
-	{}
-
-	Maybe()
-		: mV()
-		, mValid(false)
-	{}
-
-	T	 mV;
-	bool mValid;
-};
-
-template<> struct Maybe<void>
-{
-	Maybe()
-		: mValid(false)
-	{}
-	Maybe( bool valid )
-		: mValid(valid)
-	{}
-	bool mValid;
-};
-
-struct SymbolTable {
-	std::map< std::string, uint32_t> mSymbols;
-	std::map< uint32_t, std::string > mReverse;
-	uint32_t						 mCount;
-	SymbolTable() : mCount(0)
-	{}
-	uint32_t GetSymbol(std::string symbol)
-	{
-		if (mSymbols.find(symbol) == mSymbols.end())
-		{
-			mSymbols[symbol] = mCount++;
-			mReverse[mCount - 1] = symbol;
-		}
-
-		return mSymbols[symbol];
-	}
-
-	std::string GetString(uint32_t symbol)
-	{
-		if (mReverse.find(symbol) != mReverse.end())
-		{
-			return mReverse[symbol];
-		}
-
-		return "";
-	}
-};
-
 static SymbolTable gSymbolTable;
-
-
-static std::string print(Item item);
 
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
@@ -276,7 +219,7 @@ void gc( Context* context )
 	markContext(context);
 
 	uint32_t gc_cellcount = collect( &gCellAllocList, &gCellFreeList);
-	uint32_t gc_contextcount = collect( &gContextAllocList, &gContextFreeList);
+	uint32_t gc_contextcount = collect(&gContextAllocList, &gContextFreeList);
 
 	if (gVerboseGC)
 	{
