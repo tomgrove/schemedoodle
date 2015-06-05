@@ -6,6 +6,8 @@
 #include <sstream>
 #include <functional>
 #include "boost\any.hpp"
+#include "schemetypes.h"
+#include "collectable.h"
 
 static bool gTrace = false;
 static bool gVerboseGC = false;
@@ -68,78 +70,8 @@ struct SymbolTable {
 
 static SymbolTable gSymbolTable;
 
-struct Cell;
-struct Context; 
-
-typedef boost::any Item;
-//typedef void (*Native)(Item,Context*, std::function<void(Item)>);
-typedef std::function<void(Item, Context*, std::function<void(Item)>)> Native;
-
-struct Proc {
-	Cell*		mProc;
-	Context*	mClosure;
-	Native		mNative;
-	Proc( Native native )
-		: mNative( native)
-		, mProc( nullptr )
-		, mClosure( nullptr )
-	{}
-	Proc( Cell* proc, Context* closure )
-		: mNative( nullptr )
-		, mProc( proc )
-		, mClosure( closure )
-	{}
-	bool operator==( Proc& rhs) const
-	{
-		if ( rhs.mNative) {
-			return false;
-		} 
-		return this->mProc == rhs.mProc;
-	}
-};
-
-struct Unspecified {};
-
-typedef int32_t		Number;
-typedef Cell*		CellRef;
-typedef uint32_t	Symbol;
-
-const type_info& eUnspecified	= typeid(Unspecified);
-const type_info& eSymbol		= typeid(Symbol);
-const type_info& eNumber		= typeid(Number);
-const type_info& eCell			= typeid(CellRef);
-const type_info& eProc			= typeid(Proc);
 
 static std::string print(Item item);
-
-template<class T>
-struct Collectable
-{
-	T*		mNext;
-	bool	mReachable;
-	Collectable()
-		: mReachable(false)
-		, mNext(nullptr)
-	{}
-};
-
-struct Cell : public Collectable<Cell>
-{
-	Item		mCar;
-	Item		mCdr;
-	Cell() 
-		: mCdr()
-		, mCar()
-	{}
-	Cell(Item car, Item cdr)
-		: mCar(car)
-		, mCdr(cdr)
-	{}
-	Cell(Item car)
-		: mCar(car)
-		, mCdr((CellRef)nullptr)
-	{}
-};
 
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
