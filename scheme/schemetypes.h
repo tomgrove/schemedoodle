@@ -64,4 +64,6 @@ struct Cell : public Collectable<Cell>
 		: mCar(car)
 		, mCdr((CellRef)nullptr)
 	{}
+
+	void  mark() override;
 };

@@ -23,5 +23,7 @@ struct Context : public Collectable<Context>
 
 	void Set(uint32_t symbol, Item value);
 
+	void mark() override;
+
 };
 

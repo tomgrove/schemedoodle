@@ -6,9 +6,12 @@
 #include "schemetypes.h"
 #include "collectable.h"
 #include "context.h"
+#include "symboltable.h"
 
 extern bool gTrace;
 extern bool gVerboseGC;
+extern SymbolTable gSymbolTable;
+
 extern std::string print(Item);
 
 Context::Context()
@@ -78,3 +81,45 @@ void Context::Set(uint32_t symbol, Item value)
 {
 	mBindings[symbol] = value;
 }
+
+void Context::mark()
+{
+	if ( mReachable)
+	{
+		return;
+	}
+
+	mReachable = true;
+
+	for (auto pair : mBindings)
+	{
+		if (gVerboseGC)
+		{
+			printf("(%x) marking %s\n", this, gSymbolTable.GetString(pair.first).c_str());
+		}
+		if (pair.second.type() == eCell && boost::any_cast<CellRef>(pair.second))
+		{
+			auto cell = boost::any_cast<CellRef>(pair.second);
+			cell->mark();
+		}
+		else if (pair.second.type() == eProc)
+		{
+			if (!boost::any_cast<Proc>(pair.second).mNative)
+			{
+				auto cell = boost::any_cast<Proc>(pair.second).mProc;
+				cell->mark();
+			}
+			if (boost::any_cast<Proc>(pair.second).mClosure)
+			{
+				auto cell = boost::any_cast<Proc>(pair.second).mClosure;
+				cell->mark();
+			}
+		}
+	}
+
+	if ( mOuter)
+	{
+		mOuter->mark();
+	}
+}
+

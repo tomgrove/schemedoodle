@@ -15,7 +15,7 @@
 bool gTrace = false;
 bool gVerboseGC = false;
 
-static SymbolTable gSymbolTable;
+SymbolTable gSymbolTable;
 
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
