@@ -11,221 +11,16 @@
 #include "context.h"
 #include "maybe.h"
 #include "symboltable.h"
+#include "memory.h"
 
 bool gTrace = false;
 bool gVerboseGC = false;
 
 SymbolTable gSymbolTable;
+Memory		gMemory;
 
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
-void gc(Context*);
-
-const static uint32_t cMaxCells = 1000000;
-const static uint32_t cMaxContexts = 1000;
-
-static CellRef	   gCellFreeList;
-static CellRef	   gCellAllocList;
-
-static Context	   gRootContext;
-static Context*	   gContextFreeList;
-static Context*	   gContextAllocList;
-
-template< class T>
-T* makeFreeList(size_t size)
-{
-	T* freelist = new T[size];
-	for ( uint32_t i = 0; i < size - 1; i++)
-	{
-		freelist[i].mNext = &freelist[i + 1];
-	}
-	return freelist;
-}
-
-void allocFreeLists()
-{
-	gCellFreeList = makeFreeList<Cell>( cMaxCells );
-	gContextFreeList = makeFreeList<Context>( cMaxContexts );
-	gCellAllocList = nullptr;
-	gContextAllocList = &gRootContext;
-}
-
-Context* allocContext(Context* current, Context* outer)
-{
-	if (gContextFreeList == nullptr)
-	{
-		gc(current);
-		assert(gContextFreeList);
-	}
-
-	auto next = gContextFreeList->mNext;
-	auto context = new (gContextFreeList)Context( outer);
-	gContextFreeList = next;
-	context->mNext = gContextAllocList;
-	gContextAllocList = context;
-	return context;
-}
-
-Context* allocContext(Context* current, Item variables, Cell* params, Context* outer)
-{
-	if( gContextFreeList == nullptr )
-	{
-		gc(current);
-		assert(gContextFreeList);
-	}
-	
-	auto next = gContextFreeList->mNext;
-	auto context = new (gContextFreeList)Context(variables, params, outer);
-	gContextFreeList	= next;
-	context->mNext		= gContextAllocList;
-	gContextAllocList	= context;
-	return context;
-}
-
-Cell* allocCell( Context* current, Item car, Item cdr = (CellRef)nullptr)
-{
-	if (gCellFreeList == nullptr)
-	{
-		gc(current);
-		assert(gCellFreeList);;
-	}
-
-	auto next = gCellFreeList->mNext;
-	auto cell = new (gCellFreeList)Cell(car, cdr );
-	gCellFreeList = next;
-	cell->mNext = gCellAllocList;
-	gCellAllocList = cell;
-
-	return cell;
-}
-
-void markCell(Cell* cell)
-{
-	if (cell->mReachable)
-	{
-		return;
-	}
-
-	cell->mReachable = true;
-	if (cell->mCar.type() == eCell && boost::any_cast<CellRef>( cell->mCar ))
-	{
-		markCell( boost::any_cast<CellRef>( cell->mCar));
-	}
-
-	if (cell->mCdr.type() == eCell && boost::any_cast<CellRef>(cell->mCdr) )
-	{
-		markCell( boost::any_cast<CellRef>( cell->mCdr));
-	}
-}
-
-void markContext(Context* context)
-{
-	if (context->mReachable)
-	{
-		return;
-	}
-
-	context->mReachable = true;
-
-	for (auto pair : context->mBindings)
-	{
-		if (gVerboseGC)
-		{
-			printf("(%x) marking %s\n", context, gSymbolTable.GetString(pair.first).c_str());
-		}
-		if (pair.second.type() == eCell && boost::any_cast<CellRef>( pair.second) )
-		{
-			markCell( boost::any_cast<CellRef>( pair.second) );
-		}
-		else if (pair.second.type() == eProc)
-		{
-			if (!boost::any_cast<Proc>(pair.second).mNative)
-			{
-				markCell( boost::any_cast<Proc>(pair.second).mProc);
-			}
-			if ( boost::any_cast<Proc>( pair.second).mClosure)
-			{
-				markContext( boost::any_cast<Proc>(pair.second).mClosure);
-			}
-		}
-	}
-
-	if (context->mOuter)
-	{
-		markContext(context->mOuter);
-	}
-}
-
-template<class T>
-uint32_t mark(T* collectables)
-{
-	uint32_t count = 0;
-	T* i = collectables;
-	while (i)
-	{
-		i->mReachable = false;
-		i = i->mNext;
-		count++;
-	}
-
-	return count;
-}
-
-template<class T>
-uint32_t collect( T** alloclist, T** freelist  )
-{
-	T* i = *alloclist;
-	T* prev = nullptr;
-	uint32_t collected = 0;
-	while (i)
-	{
-		T* next = i->mNext;
-		if (!i->mReachable)
-		{
-			if (!prev)
-			{
-				*alloclist = i->mNext;
-			}
-			else
-			{
-				prev->mNext = i->mNext;
-			}
-
-			i->mNext = *freelist;
-			*freelist = i;
-			collected++;
-		}
-		else
-		{
-			prev = i;
-		}
-
-		i = next;
-	}
-
-	return collected;
-}
-
-void gc( Context* context )
-{
-	uint32_t cellcount = mark(gCellAllocList);
-	uint32_t contextcount = mark(gContextAllocList);
-
-	if (gVerboseGC)
-	{
-		printf("considering %d cells and %d contexts during GC\n", cellcount, contextcount);
-	}
-
-	markContext(context);
-
-	uint32_t gc_cellcount = collect( &gCellAllocList, &gCellFreeList);
-	uint32_t gc_contextcount = collect(&gContextAllocList, &gContextFreeList);
-
-	if (gVerboseGC)
-	{
-		printf("return %d cells and %d contexts to the free lists\n",gc_cellcount, gc_contextcount);
-	}
-}
 
 bool isSign(char c)
 {
@@ -371,7 +166,7 @@ Maybe<Item> parseQuotedForm(Context* context, char*cs, char** rest)
 	Maybe<Item> item;
 	if ((item = parseForm(context, cs, rest)).mValid)
 	{
-		Cell* qcell = allocCell( context, Item( gSymbolTable.GetSymbol("quote") ), Item( allocCell( context, item.mV ) ));
+		Cell* qcell = gMemory.allocCell( context, Item( gSymbolTable.GetSymbol("quote") ), Item( gMemory.allocCell( context, item.mV ) ));
 		return Maybe<Item>(Item(qcell));
 	}
 
@@ -438,7 +233,7 @@ Maybe<Cell*> parseForms(Context* context, char* cs, char** rest)
 	Cell* cell = nullptr;
 	if ((item = parseForm(context, cs, rest)).mValid)
 	{
-		cell = allocCell(context, Item());
+		cell = gMemory.allocCell(context, Item());
 		cell->mCar = item.mV;
 	}
 	else
@@ -612,7 +407,7 @@ void cons(Item pair, Context* context, std::function<void(Item)> k )
 {
 	eval(car(pair), context, [context, pair, k](Item first){
 		eval(car(cdr(pair)), context, [first, k,context](Item second){
-			k(Item( allocCell(context, first, second)));
+			k(Item( gMemory.allocCell(context, first, second)));
 		}); });
 }
 
@@ -749,7 +544,7 @@ void mapeval(Item in, Context* context, std::function<void(Item)> k)
 	{
 		eval(boost::any_cast<CellRef>(in)->mCar, context, [in, context, k](Item result){
 			mapeval(boost::any_cast<CellRef>(in)->mCdr, context, [context, result, k](Item rest){
-				k(Item(allocCell(context, result, rest)));
+				k(Item( gMemory.allocCell(context, result, rest)));
 			});
 		});
 	}
@@ -778,7 +573,7 @@ void eval_letstar_rec(Item defs, Context* context, std::function<void(Context*)>
 		Item defpair = car(defs);
 		Item symbol = car(defpair);
 		Item def = car(cdr(defpair));
-		auto newcontext = allocContext( context, context);
+		auto newcontext = gMemory.allocContext( context, context);
 		eval(def, context, [newcontext, context, defs, k](Item item){
 			Symbol symbol = boost::any_cast<Symbol>(car(car(defs)));
 			newcontext->Set(symbol, item);
@@ -812,7 +607,7 @@ void eval_let(Item item, Context* context, std::function<void(Item)> k)
 	Symbol let = boost::any_cast<Symbol>(car(item));
 	Item defs = car(cdr(item));
 	Item body = car(cdr(cdr(item)));
-	auto newContext = allocContext(context,context);
+	auto newContext = gMemory.allocContext(context,context);
 	if ( let== gSymbolTable.GetSymbol("let"))
 	{
 		eval_let_rec(defs, context, newContext, [body, k](Context* c){ eval(body, c, k); });
@@ -856,7 +651,7 @@ void eval_define(Item item, Context* context, std::function<void(Item)> k)
 		auto arglist = cdr(params);
 		auto body = car(cdr(cdr(item)));
 
-		value = Proc(allocCell(context, arglist, Item(allocCell(context, body))), context);
+		value = Proc( gMemory.allocCell(context, arglist, Item( gMemory.allocCell(context, body))), context);
 		context->Set(boost::any_cast<Symbol>(name), value);
 		k(value);
 	}
@@ -900,7 +695,7 @@ void eval_proc(Item item, Context* context, std::function<void(Item)> k)
 			auto params = car(Item(boost::any_cast<Proc>(proc).mProc));
 			auto body = car(cdr(Item(boost::any_cast<Proc>(proc).mProc)));
 			mapeval(cdr(item), context, [context, params, proc, body, k](Item arglist){
-				auto newContext = allocContext(context, params, boost::any_cast<CellRef>(arglist), boost::any_cast<Proc>(proc).mClosure);
+				auto newContext = gMemory.allocContext(context, params, boost::any_cast<CellRef>(arglist), boost::any_cast<Proc>(proc).mClosure);
 				yield([body, newContext, k](){ eval(body, newContext, k); });
 			});
 		}
@@ -995,17 +790,17 @@ void eval(Item item, Context* context, std::function<void(Item)> k )
 
 void addNativeFns()
 {
-	gRootContext.Set(gSymbolTable.GetSymbol("cons"), Item( Proc(cons) ));
-	gRootContext.Set(gSymbolTable.GetSymbol("car"), Item( Proc(carProc) ));
-	gRootContext.Set(gSymbolTable.GetSymbol("cdr"), Item( Proc( cdrProc) ));
-	gRootContext.Set(gSymbolTable.GetSymbol("="), Item( Proc( compare )));
-	gRootContext.Set(gSymbolTable.GetSymbol("null?"), Item( Proc(null)));
-	gRootContext.Set(gSymbolTable.GetSymbol("+"), Item( Proc(add) ));
-	gRootContext.Set(gSymbolTable.GetSymbol("-"), Item( Proc( sub )));
-	gRootContext.Set(gSymbolTable.GetSymbol("*"), Item( Proc(mul)));
-	gRootContext.Set(gSymbolTable.GetSymbol("/"), Item( Proc(bidiv)));
-	gRootContext.Set(gSymbolTable.GetSymbol("%"), Item( Proc(mod)));
-	gRootContext.Set(gSymbolTable.GetSymbol("print"), Item( Proc(biprint)));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("cons"), Item( Proc(cons) ));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("car"), Item( Proc(carProc) ));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("cdr"), Item( Proc( cdrProc) ));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("="), Item( Proc( compare )));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("null?"), Item( Proc(null)));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("+"), Item( Proc(add) ));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("-"), Item( Proc( sub )));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("*"), Item( Proc(mul)));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("/"), Item( Proc(bidiv)));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("%"), Item( Proc(mod)));
+	gMemory.getRoot()->Set(gSymbolTable.GetSymbol("print"), Item( Proc(biprint)));
 }
 
 void tcoeval(Item form, Context* context, std::function<void(Item)> k)
@@ -1024,10 +819,10 @@ void repl()
 		char* rest;
 		printf(">>");
 		gets_s(buffer, sizeof( buffer ));
-		Maybe<Item> form = parseForm(&gRootContext, buffer, &rest);
+		Maybe<Item> form = parseForm(gMemory.getRoot(), buffer, &rest);
 		if (form.mValid)
 		{
-			tcoeval(form.mV, &gRootContext, [](Item item){
+			tcoeval(form.mV, gMemory.getRoot(), [](Item item){
 				auto s = print(item);
 				puts(s.c_str());
 				putchar('\n');
@@ -1038,7 +833,7 @@ void repl()
 			puts("parse error\n");
 		}
 
-		gc(&gRootContext);
+		gMemory.gc(gMemory.getRoot() );
 	}
 }
 
@@ -1092,30 +887,30 @@ void test_symbols()
 void test_list()
 {
 	char* rest;
-	assert(parseList(&gRootContext,"()",&rest).mValid);
-	assert(parseList(&gRootContext,"(    )", &rest).mValid);
-	assert(parseList(&gRootContext,"()", &rest).mV.type() == eCell);
-	assert(parseList(&gRootContext,"( cat )", &rest).mV.type() == eCell);
-	assert(parseList(&gRootContext,"( cat vs unicorn )", &rest).mV.type() == eCell);
-	assert(parseList(&gRootContext, "( Imogen loves Mummy and Daddy . xs )", &rest).mV.type() == eCell);
-	assert(parseList(&gRootContext, "( first . second )", &rest).mV.type() == eCell);
-	assert(parseList(&gRootContext,"( lambda (x) ( plus x 10 ) )", &rest).mV.type() == eCell);
+	assert(parseList(gMemory.getRoot(),"()",&rest).mValid);
+	assert(parseList(gMemory.getRoot(),"(    )", &rest).mValid);
+	assert(parseList(gMemory.getRoot(),"()", &rest).mV.type() == eCell);
+	assert(parseList(gMemory.getRoot(),"( cat )", &rest).mV.type() == eCell);
+	assert(parseList(gMemory.getRoot(),"( cat vs unicorn )", &rest).mV.type() == eCell);
+	assert(parseList(gMemory.getRoot(), "( Imogen loves Mummy and Daddy . xs )", &rest).mV.type() == eCell);
+	assert(parseList(gMemory.getRoot(), "( first . second )", &rest).mV.type() == eCell);
+	assert(parseList(gMemory.getRoot(),"( lambda (x) ( plus x 10 ) )", &rest).mV.type() == eCell);
 
-	assert(length(boost::any_cast<CellRef>( parseList(&gRootContext,"( cat 100 unicorn )", &rest).mV)) == 3);
-	assert(length(boost::any_cast<CellRef>( parseList(&gRootContext, "( Maddy loves ( horses and unicorns) )", &rest).mV)) == 3);
-	assert(length(boost::any_cast<CellRef>( parseList(&gRootContext,"( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV)) == 3);
-	assert(!parseList(&gRootContext,"( Maddy loves ", &rest).mValid);
+	assert(length(boost::any_cast<CellRef>( parseList(gMemory.getRoot(),"( cat 100 unicorn )", &rest).mV)) == 3);
+	assert(length(boost::any_cast<CellRef>( parseList(gMemory.getRoot(), "( Maddy loves ( horses and unicorns) )", &rest).mV)) == 3);
+	assert(length(boost::any_cast<CellRef>( parseList(gMemory.getRoot(),"( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV)) == 3);
+	assert(!parseList(gMemory.getRoot(),"( Maddy loves ", &rest).mValid);
 }
 
 void test_quote()
 {
 	char* rest;
-	assert(parseForm(&gRootContext,"'hello-everyone", &rest).mValid);
-	assert(parseForm(&gRootContext,"'(hello everyone)", &rest).mValid );
-	assert(parseForm(&gRootContext,"'''hello-multiqoute", &rest).mValid );
+	assert(parseForm(gMemory.getRoot(),"'hello-everyone", &rest).mValid);
+	assert(parseForm(gMemory.getRoot(),"'(hello everyone)", &rest).mValid );
+	assert(parseForm(gMemory.getRoot(),"'''hello-multiqoute", &rest).mValid );
 }
 
-void evals_to_number(char* datum, int32_t value, Context* context = &gRootContext)
+void evals_to_number(char* datum, int32_t value, Context* context = gMemory.getRoot())
 {
 	char* rest;
 	auto item = parseForm(context, datum, &rest);
@@ -1126,7 +921,7 @@ void evals_to_number(char* datum, int32_t value, Context* context = &gRootContex
 	});
 }
 
-void evals_to_symbol(char* datum, const char* symbol, Context* context = &gRootContext)
+void evals_to_symbol(char* datum, const char* symbol, Context* context = gMemory.getRoot())
 {
 	char* rest;
 	auto item = parseForm(context,datum, &rest);
@@ -1157,14 +952,14 @@ void test_eval()
 	evals_to_number("(let* ((x 5) (y x)) (+ x y) )", 10);
 	evals_to_number("( begin (set! something 10) something)", 10);
 	char* rest;
-	auto list = parseForm(&gRootContext,"('a 'b (+ 1 2))", &rest).mV;
-	mapeval(list, &gRootContext, [](Item item){ puts(print(item).c_str()); });
+	auto list = parseForm(gMemory.getRoot(),"('a 'b (+ 1 2))", &rest).mV;
+	mapeval(list, gMemory.getRoot(), [](Item item){ puts(print(item).c_str()); });
 }
 
 void test_context()
 {
 	char* rest;
-	Context* context = new Context(&gRootContext);
+	Context* context = new Context(gMemory.getRoot());
 	evals_to_number("(set! x 10)", 10, context);
 	evals_to_number("x", 10, context);
 
@@ -1218,7 +1013,6 @@ int main(int argc, char* argv[])
 {
 	test_any();
 
-	allocFreeLists();
 	addNativeFns();
 
 	test_numbers();

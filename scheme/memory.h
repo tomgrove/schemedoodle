@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <memory>
 #include "schemetypes.h"
 #include "context.h"
 #include "collectable.h"
@@ -22,10 +23,8 @@ public:
 	Context* allocContext(Context* current, Item variables, Cell* params, Context* outer);
 	Cell*	 allocCell(Context* current, Item car, Item cdr = (CellRef)nullptr);
 	void     gc(Context* context);
+	Context* getRoot() { return &mRootContext;  }
 private:
-	//void markCell(Cell* cell);
-	//void markContext(Context* context);
 	uint32_t mark(ICollectable* collectables);
 	uint32_t collect(ICollectable** alloclist, ICollectable** freelist);
-	//template< class T> T* makeFreeList(size_t size);
 };
