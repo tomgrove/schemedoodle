@@ -66,4 +66,5 @@ struct Cell : public Collectable<Cell>
 	{}
 
 	void  mark() override;
+	Number length();
 };

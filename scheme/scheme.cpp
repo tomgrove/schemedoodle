@@ -12,6 +12,8 @@
 #include "maybe.h"
 #include "symboltable.h"
 #include "memory.h"
+#include "parser.h"
+#include "list.h"
 
 bool gTrace = false;
 bool gVerboseGC = false;
@@ -22,321 +24,7 @@ Memory		gMemory;
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
 
-bool isSign(char c)
-{
-	return c == '-';
-}
-
-bool isDigit(char c)
-{
-	return c >= '0' && c <= '9';
-}
-
-int32_t parseDigits(char*cs, char** rest, int32_t previous)
-{
-	if (!isDigit(*cs))
-	{
-		*rest = cs;
-		return previous;
-	}
-	else
-	{
-		int32_t digit = *cs - '0';
-		cs++;
-		return parseDigits(cs, rest, previous * 10 + digit);
-	}
-}
-
-Maybe<Item> parseNumber(char* cs, char** rest)
-{
-	int32_t sign = 1;
-	if ( isSign(*cs) )
-	{
-		sign = -1;
-		cs++;
-	}
-	
-	if (!isDigit(*cs))
-	{
-		return Maybe<Item>();
-	}
-
-	return Maybe<Item>( Item( parseDigits(cs, rest, 0) * sign));
-}
-
-bool isSymbolInitial(char c)
-{
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '+' || c == '=' || c == '*' || c == '/' || c == '-' || c == '%';
-}
-
-bool isSymbolBody(char c)
-{
-	return isSymbolInitial(c) || isDigit(c) || (c == '-') || ( c=='?') || ( c=='!');
-}
-
-Maybe<Item> parseSymbol(char* cs, char** rest)
-{
-	if (isSymbolInitial(*cs))
-	{
-		std::string symbol;
-		while (isSymbolBody(*cs))
-		{
-			symbol.push_back(*cs);
-			cs++;
-		}
-		*rest = cs;
-		return Maybe<Item>(Item(gSymbolTable.GetSymbol(symbol)));
-	}
-	else
-	{
-		return Maybe<Item>();
-	}
-}
-
-bool isNewline(char c)
-{
-	return (c == '\n') || (c == '\f') || (c == '\r');
-}
-
-bool isWhitespace(char c)
-{
-	return (c == ' ') || (c == '\t') || isNewline( c );
-}
-
-Maybe<void> parseWhitespace(char* cs, char** rest)
-{
-	Maybe<void> valid(true);
-	while (isWhitespace(*cs))
-	{
-		cs++;
-	}
-
-	*rest = cs;
-	return valid;
-}
-
-Maybe<void> parseSingleLineComment(char* cs, char** rest)
-{
-	if (*cs != ';')
-	{
-		return Maybe<void>();
-	}
-	cs++;
-	while (!isNewline(*cs) && *cs != '\0')
-	{
-		cs++;
-	}
-	*rest = cs;
-
-	return Maybe<void>(true);
-}
-
-Maybe<void> parseAtmosphere(char* cs, char** rest)
-{
-	if (*cs == ';')
-	{
-		parseSingleLineComment(cs, rest);
-		return parseAtmosphere(*rest, rest);
-	}
-	else if (isWhitespace(*cs))
-	{
-		parseWhitespace(cs, rest);
-		return parseAtmosphere(*rest, rest);
-	}
-	else
-	{
-		*rest = cs;
-	}
-
-	return Maybe<void>(true);
-}
-
-Maybe<Item> parseList(Context* context, char* cs, char** rest);
-
-Maybe<Item> parseForm(Context* context, char*cs, char** rest);
-
-Maybe<Item> parseQuotedForm(Context* context, char*cs, char** rest)
-{
-	if (*cs != '\'')
-	{
-		return Maybe<Item>();
-	}
-	cs++;
-
-	Maybe<Item> item;
-	if ((item = parseForm(context, cs, rest)).mValid)
-	{
-		Cell* qcell = gMemory.allocCell( context, Item( gSymbolTable.GetSymbol("quote") ), Item( gMemory.allocCell( context, item.mV ) ));
-		return Maybe<Item>(Item(qcell));
-	}
-
-	return Maybe<Item>();
-}
-Maybe<Item> parseUnquotedForm( Context* context, char*cs, char** rest)
-{
-	Maybe<Item> item;
-	if ((item = parseNumber(cs, rest)).mValid)
-	{
-		return item;
-	}
-	else if ((item = parseSymbol(cs, rest)).mValid)
-	{
-		return item;
-	}
-	else if ((item = parseList(context, cs, rest)).mValid)
-	{
-		return item;
-	}
-	else
-	{
-		return Maybe<Item>();
-	}
-}
-
-Maybe<Item> parseForm(Context* context, char* cs, char** rest)
-{
-	Maybe<Item> item;
-	if ((item = parseQuotedForm(context, cs, rest)).mValid)
-	{
-		return item;
-	}
-	else if ((item = parseUnquotedForm(context, cs, rest)).mValid )
-	{
-		return item;
-	}
-	return Maybe<Item>();
-}
-
-Maybe<Item> parsePair(Context* context, char* cs, char** rest)
-{
-	if (*cs != '.')
-	{
-		return Maybe<Item>();
-	}
-
-	cs++;
-	parseAtmosphere(cs, rest);
-	cs = *rest;
-
-	Maybe<Item> item;
-	if ((item = parseForm(context, cs, rest)).mValid)
-	{
-		return item;
-	}
-
-	return Maybe<Item>();
-}
-
-Maybe<Cell*> parseForms(Context* context, char* cs, char** rest)
-{
-	Maybe<Item> item;
-	Cell* cell = nullptr;
-	if ((item = parseForm(context, cs, rest)).mValid)
-	{
-		cell = gMemory.allocCell(context, Item());
-		cell->mCar = item.mV;
-	}
-	else
-	{
-		return Maybe<Cell*>();
-	}
-
-	parseAtmosphere(*rest, rest);
-	cs = *rest;
-
-	Maybe<Item> second;
-	if ((second = parsePair(context, cs, rest)).mValid)
-	{
-		cell->mCdr = second.mV;
-	}
-	else
-	{
-		Maybe<Cell*> tail;
-		if ((tail = parseForms(context, cs, rest)).mValid)
-		{
-			cell->mCdr = Item(tail.mV);
-		}
-		else
-		{
-			cell->mCdr = Item((Cell*)nullptr);
-		}
-	}
-
-	return Maybe<Cell*>(cell);
-}
-
-Maybe<Item> parseNil(char* cs, char** rest)
-{
-	if (*cs == '(')
-	{
-		cs++;
-	}
-	else
-	{
-		return Maybe<Item>();
-	}
-
-	parseAtmosphere(cs, rest);
-
-	cs = *rest;
-
-	if (*cs == ')')
-	{
-		cs++;
-		*rest = cs;
-		return Maybe<Item>(Item((Cell*)nullptr));
-	}
-
-	return Maybe<Item>();
-}
-
-Maybe<Item> parseNonEmptyList(Context* context, char* cs, char**rest)
-{
-	Maybe<Item> item;
-	if (*cs != '(')
-	{
-		return Maybe<Item>();
-	}
-	cs++;
-
-	parseAtmosphere(cs, rest);
-	Maybe<Cell*> cell;
-	if ( (cell = parseForms(context, *rest, rest)).mValid )
-	{
-		item = Item(cell.mV);
-	}
-	else
-	{
-		return Maybe<Item>();
-	}
-	parseAtmosphere(*rest, rest);
-
-	cs = *rest;
-	if (*cs != ')')
-	{
-		return Maybe<Item>();
-	}
-	cs++;
-	*rest = cs;
-
-	return Maybe<Item>(item);
-}
-
-
-Maybe<Item> parseList(Context* context, char* cs, char** rest)
-{
-	Maybe<Item> item;
-	if ((item = parseNil(cs, rest)).mValid)
-	{
-		return item;
-	}
-	else if ((item = parseNonEmptyList(context, cs, rest)).mValid)
-	{
-		return item;
-	}
-	return Maybe<Item>();
-}
-
+/*
 uint32_t length(CellRef cell)
 {
 	if (cell == nullptr)
@@ -348,6 +36,7 @@ uint32_t length(CellRef cell)
 		return 1 + length( boost::any_cast<CellRef>(cell->mCdr));
 	}
 }
+*/
 
 std::string print(Item item)
 {
@@ -389,18 +78,6 @@ std::string print(Item item)
 	}
 	
 	return sstream.str();
-}
-
-Item car(Item pair)
-{
-	assert(pair.type() == eCell && boost::any_cast<CellRef>(pair) != nullptr);
-	return boost::any_cast<CellRef>(pair)->mCar;
-}
-
-Item cdr(Item pair)
-{
-	assert(pair.type() == eCell && boost::any_cast<CellRef>(pair) != nullptr);
-	return boost::any_cast<CellRef>(pair)->mCdr;
 }
 
 void cons(Item pair, Context* context, std::function<void(Item)> k )
@@ -630,7 +307,8 @@ void eval_define(Item item, Context* context, std::function<void(Item)> k)
 		name = car(cdr(item));
 
 		// (define x y )
-		if (length(boost::any_cast<CellRef>(item)) == 3)
+		auto lst = boost::any_cast<CellRef>(item);
+		if (lst->length() == 3)
 		{
 			eval(car(cdr(cdr(item))), context, [name, context, k](Item value){
 				context->Set(boost::any_cast<Symbol>(name), value);
@@ -819,7 +497,7 @@ void repl()
 		char* rest;
 		printf(">>");
 		gets_s(buffer, sizeof( buffer ));
-		Maybe<Item> form = parseForm(gMemory.getRoot(), buffer, &rest);
+		Maybe<Item> form = Parser::parseForm(gMemory.getRoot(), buffer, &rest);
 		if (form.mValid)
 		{
 			tcoeval(form.mV, gMemory.getRoot(), [](Item item){
@@ -837,83 +515,10 @@ void repl()
 	}
 }
 
-void test_numbers()
-{ 
-	char* rest;
-	assert(boost::any_cast<Number>((parseNumber("10",&rest)).mV) == 10);
-	assert(boost::any_cast<Number>((parseNumber("0", &rest)).mV) == 0);
-	assert(boost::any_cast<Number>((parseNumber("-0", &rest)).mV) == 0);
-	assert((parseNumber("", &rest)).mValid == false);
-	assert(boost::any_cast<Number>((parseNumber("100", &rest)).mV) == 100);
-	assert(boost::any_cast<Number>((parseNumber("-123", &rest)).mV) == -123);
-	assert((parseNumber("cat", &rest)).mValid == false);
-}
-
-void test_comments()
-{
-	char* rest;
-	assert(parseSingleLineComment("; this is a comment\n", &rest).mValid);
-	assert(!parseSingleLineComment("this is not a comment\n", &rest).mValid);
-	assert(parseSingleLineComment(";this is a comment", &rest).mValid);
-}
-
-void test_atmosphere()
-{
-	char* rest;
-	assert(parseAtmosphere("; this is a comment\n  ; so is this\n    something", &rest).mValid == true);
-	assert(std::string(rest) == "something");
-}
-
-void test_symbols()
-{
-	char* rest;
-	
-	SymbolTable symbols;
-	auto id0 = symbols.GetSymbol("cat");
-	auto id1 = symbols.GetSymbol("cat");
-	assert(id0 == id1);
-
-	assert(symbols.GetString(id0) == "cat");
-
-	assert( gSymbolTable.GetString( boost::any_cast<Symbol>( parseSymbol("cat", &rest).mV)) == "cat");
-	assert(*rest == '\0');
-
-	assert( gSymbolTable.GetString( boost::any_cast<Symbol>( parseSymbol("this-is-a-symbol", &rest).mV) ) == "this-is-a-symbol");
-	assert( parseSymbol("0this-is-not-a-symbol", &rest).mValid == false);
-	assert( gSymbolTable.GetString( boost::any_cast<Symbol>(parseSymbol("several symbols", &rest).mV) ) == "several");
-	assert( gSymbolTable.GetString( boost::any_cast<Symbol>( parseSymbol("UniCorn5", &rest).mV)) == "UniCorn5");
-}
-
-void test_list()
-{
-	char* rest;
-	assert(parseList(gMemory.getRoot(),"()",&rest).mValid);
-	assert(parseList(gMemory.getRoot(),"(    )", &rest).mValid);
-	assert(parseList(gMemory.getRoot(),"()", &rest).mV.type() == eCell);
-	assert(parseList(gMemory.getRoot(),"( cat )", &rest).mV.type() == eCell);
-	assert(parseList(gMemory.getRoot(),"( cat vs unicorn )", &rest).mV.type() == eCell);
-	assert(parseList(gMemory.getRoot(), "( Imogen loves Mummy and Daddy . xs )", &rest).mV.type() == eCell);
-	assert(parseList(gMemory.getRoot(), "( first . second )", &rest).mV.type() == eCell);
-	assert(parseList(gMemory.getRoot(),"( lambda (x) ( plus x 10 ) )", &rest).mV.type() == eCell);
-
-	assert(length(boost::any_cast<CellRef>( parseList(gMemory.getRoot(),"( cat 100 unicorn )", &rest).mV)) == 3);
-	assert(length(boost::any_cast<CellRef>( parseList(gMemory.getRoot(), "( Maddy loves ( horses and unicorns) )", &rest).mV)) == 3);
-	assert(length(boost::any_cast<CellRef>( parseList(gMemory.getRoot(),"( Maddy loves ; inject a comment \n( horses and unicorns) )", &rest).mV)) == 3);
-	assert(!parseList(gMemory.getRoot(),"( Maddy loves ", &rest).mValid);
-}
-
-void test_quote()
-{
-	char* rest;
-	assert(parseForm(gMemory.getRoot(),"'hello-everyone", &rest).mValid);
-	assert(parseForm(gMemory.getRoot(),"'(hello everyone)", &rest).mValid );
-	assert(parseForm(gMemory.getRoot(),"'''hello-multiqoute", &rest).mValid );
-}
-
 void evals_to_number(char* datum, int32_t value, Context* context = gMemory.getRoot())
 {
 	char* rest;
-	auto item = parseForm(context, datum, &rest);
+	auto item = Parser::parseForm(context, datum, &rest);
 	assert(item.mValid);
 	tcoeval(item.mV, context, [value](Item result) {
 		assert(result.type() == eNumber);
@@ -924,7 +529,7 @@ void evals_to_number(char* datum, int32_t value, Context* context = gMemory.getR
 void evals_to_symbol(char* datum, const char* symbol, Context* context = gMemory.getRoot())
 {
 	char* rest;
-	auto item = parseForm(context,datum, &rest);
+	auto item = Parser::parseForm(context,datum, &rest);
 	assert(item.mValid);
 	tcoeval(item.mV, context, [symbol](Item result) {
 		assert(result.type() == eSymbol);
@@ -952,7 +557,7 @@ void test_eval()
 	evals_to_number("(let* ((x 5) (y x)) (+ x y) )", 10);
 	evals_to_number("( begin (set! something 10) something)", 10);
 	char* rest;
-	auto list = parseForm(gMemory.getRoot(),"('a 'b (+ 1 2))", &rest).mV;
+	auto list = Parser::parseForm(gMemory.getRoot(),"('a 'b (+ 1 2))", &rest).mV;
 	mapeval(list, gMemory.getRoot(), [](Item item){ puts(print(item).c_str()); });
 }
 
@@ -964,30 +569,30 @@ void test_context()
 	evals_to_number("x", 10, context);
 
 	evals_to_symbol("(define x 'cat)", "cat", context);
-	tcoeval(parseForm(context,"(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
+	tcoeval(Parser::parseForm(context,"(define length (lambda (xs) (if (null? xs ) 0 (+ 1 (length (cdr xs))))))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length ())", 0, context);
 	evals_to_number("(length '(cat))", 1, context);
 	evals_to_number("(length '(cat 'dog))", 2, context);
 
-	tcoeval(parseForm(context,"(define (hello-world) (print 'hello-world))", &rest).mV, context, [](Item){});
-	tcoeval(parseForm(context,"(hello-world)", &rest).mV, context, [](Item){});
+	tcoeval(Parser::parseForm(context,"(define (hello-world) (print 'hello-world))", &rest).mV, context, [](Item){});
+	tcoeval(Parser::parseForm(context,"(hello-world)", &rest).mV, context, [](Item){});
 
-	tcoeval(parseForm(context,"(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
+	tcoeval(Parser::parseForm(context,"(define (length2 xs) (if (null? xs ) 0 (+ 1 (length2 (cdr xs)) )))", &rest).mV, context, [](Item item){});
 	evals_to_number("(length2 ())", 0, context);
 	evals_to_number("(length2 '(cat))", 1, context);
 	evals_to_number("(length2 '(cat 'dog))", 2, context);
 
-	tcoeval(parseForm(context,"(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
-	tcoeval(parseForm(context,"(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
-	tcoeval(parseForm(context,"(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
+	tcoeval(Parser::parseForm(context,"(define make-plus (lambda (x) (lambda (y) (+ x y)))))", &rest).mV, context, [](Item item){});
+	tcoeval(Parser::parseForm(context,"(define plus10 (make-plus 10))", &rest).mV, context, [](Item item){});
+	tcoeval(Parser::parseForm(context,"(define inc (make-plus 1))", &rest).mV, context, [](Item item){});
 	evals_to_number("(plus10 1)", 11, context);
 	evals_to_number("(inc 10)", 11, context);
 
-	tcoeval(parseForm(context,"(define map (lambda (p xs)" 
+	tcoeval(Parser::parseForm(context,"(define map (lambda (p xs)" 
 				   "(if (null? xs) ()" 
 				   "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context, [](Item item){});
 
-	tcoeval(parseForm(context,"(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
+	tcoeval(Parser::parseForm(context,"(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
 
 	evals_to_number("(begin "
 					 "(define ( f x ) (" 
@@ -1015,12 +620,7 @@ int main(int argc, char* argv[])
 
 	addNativeFns();
 
-	test_numbers();
-	test_symbols();
-	test_comments();
-	test_atmosphere();
-	test_list();
-	test_quote();
+	Parser::test();
 
 	test_eval();
 	test_context();

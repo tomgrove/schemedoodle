@@ -83,8 +83,10 @@
   <ItemGroup>
     <ClInclude Include="collectable.h" />
     <ClInclude Include="context.h" />
+    <ClInclude Include="list.h" />
     <ClInclude Include="maybe.h" />
     <ClInclude Include="memory.h" />
+    <ClInclude Include="parser.h" />
     <ClInclude Include="schemetypes.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="symboltable.h" />
@@ -92,7 +94,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="context.cpp" />
+    <ClCompile Include="list.cpp" />
     <ClCompile Include="memory.cpp" />
+    <ClCompile Include="parser.cpp" />
     <ClCompile Include="scheme.cpp" />
     <ClCompile Include="schemetypes.cpp" />
     <ClCompile Include="stdafx.cpp">
