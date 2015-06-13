@@ -24,20 +24,6 @@ Memory		gMemory;
 struct Context;
 void eval(Item item, Context* context, std::function<void(Item)> k);
 
-/*
-uint32_t length(CellRef cell)
-{
-	if (cell == nullptr)
-	{
-		return 0;
-	}
-	else
-	{
-		return 1 + length( boost::any_cast<CellRef>(cell->mCdr));
-	}
-}
-*/
-
 std::string print(Item item)
 {
 	std::stringstream sstream;
@@ -171,37 +157,70 @@ Number compareAny(Item first, Item second)
 	return (boost::any_cast<T>(first) == boost::any_cast<T>(second)) ? 1 : 0;
 }
 
+int compareShallow(Item first, Item second)
+{
+	if (first.type() != second.type())
+	{
+		return 0;
+	}
+	else if (first.type() == eNumber)
+	{
+		return compareAny<Number>(first, second);
+	}
+	else if (first.type() == eProc)
+	{
+		return compareAny<Proc>(first, second);
+	}
+	else if (first.type() == eSymbol)
+	{
+		return compareAny<Symbol>(first, second);
+	}
+	else
+	{
+		return compareAny<CellRef>(first, second);
+	}
+
+	return 0;
+}
+
 void compare(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
-		eval(car(cdr(pair)), context, [first, k](Item second){
-		
-			if (first.type() != second.type())
-			{
-				k(0);
-			}
-			else if (first.type() == eNumber)
-			{
-				k(compareAny<Number>(first, second));
-			}
-			else if (first.type() == eProc)
-			{
-				k(compareAny<Proc>(first, second));
-			}
-			else if (first.type() == eSymbol)
-			{
-				k(compareAny<Symbol>(first, second));
-			}
-			else if (first.type() == eCell)
-			{
-				k(compareAny<CellRef>(first, second));
-			}
-			else
-			{
-				k(0);
-			}
+		eval(car(cdr(pair)), context, [first, k](Item second){	
+			k(compareShallow(first, second));
 		});
 	});
+}
+
+bool compareDeep(Item first, Item second)
+{
+	if (first.type() != second.type())
+	{
+		return false;
+	}
+	else
+	{
+		if (first.type() == eCell)
+		{
+			auto cell0 = boost::any_cast<CellRef>(first);
+			auto cell1 = boost::any_cast<CellRef>(second);
+
+			if (!cell0)
+			{
+				return !cell1;
+			}
+
+			if (compareDeep(cell0->mCar, cell1->mCar))
+			{
+				return compareDeep(cell0->mCdr, cell1->mCdr);
+			}
+			return false;
+		}
+		else
+		{
+			return compareShallow(first, second);
+		}
+	}
 }
 
 static std::function<void(void)> gNext;
@@ -515,6 +534,21 @@ void repl()
 	}
 }
 
+void eval_same(char* datum0, char* datum1, Context* context = gMemory.getRoot())
+{
+	char* rest;
+	auto item = Parser::parseForm(context, datum0, &rest);
+	assert(item.mValid);
+	tcoeval(item.mV, context, [rest,context,datum1](Item result0) {
+		char* rest2;
+		auto item1 = Parser::parseForm(context, datum1, &rest2);
+		tcoeval(item1.mV, context, [result0](Item result1){
+			auto eq = compareDeep(result0, result1);
+			assert(eq);
+		});
+	});
+}
+
 void evals_to_number(char* datum, int32_t value, Context* context = gMemory.getRoot())
 {
 	char* rest;
@@ -592,7 +626,7 @@ void test_context()
 				   "(if (null? xs) ()" 
 				   "( cons (p (car xs)) (map p (cdr xs))))))", &rest).mV, context, [](Item item){});
 
-	tcoeval(Parser::parseForm(context,"(map inc '(1 2 3))", &rest).mV, context, [](Item item){});
+	eval_same("(map inc '(1 2 3))", "'(2 3 4)", context);
 
 	evals_to_number("(begin "
 					 "(define ( f x ) (" 
@@ -600,6 +634,9 @@ void test_context()
 												    "( f (+ 1 x)))))" 
 					  "(f 0))"
 					  , 10);
+
+	eval_same("10", "10");
+	eval_same("'10", "10");
 }
 
 void test_any()

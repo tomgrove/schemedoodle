@@ -25,3 +25,4 @@ Item cdr(Item pair)
 	assert(pair.type() == eCell && boost::any_cast<CellRef>(pair) != nullptr);
 	return boost::any_cast<CellRef>(pair)->mCdr;
 }
+
