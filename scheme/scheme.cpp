@@ -66,6 +66,19 @@ std::string print(Item item)
 	return sstream.str();
 }
 
+template<typename T>
+void typecheck(Item item, std::string ex, std::function<void(Item)> k)
+{
+	if (item.type() != typeid(T))
+	{
+		gThrow(ex, k);
+	}
+	else
+	{
+		k(item);
+	}
+}
+
 void cons(Item pair, Context* context, std::function<void(Item)> k )
 {
 	eval(car(pair), context, [context, pair, k](Item first){
@@ -98,9 +111,13 @@ void cdrProc(Item pair,Context* context, std::function<void(Item)> k)
 void mul(Item pair, Context* context, std::function<void(Item)> k)
 {
 	eval(car(pair), context, [context, k, pair](Item first) {
-		eval( car(cdr(pair)), context, [first,k](Item second){
-			k( Item( boost::any_cast<Number>(first) * boost::any_cast<Number>( second)  ) );
-		}); 
+		typecheck<Number>(first, "&arg0-must-eval-to-number", [pair, k, context](Item firstnumber){
+			eval(car(cdr(pair)), context, [firstnumber, k](Item second){
+				typecheck<Number>(second, "&arg1-must-eval-to-number", [firstnumber,k](Item secondnumber) {
+					k(Item(boost::any_cast<Number>(firstnumber)* boost::any_cast<Number>(secondnumber)));
+				});
+			});
+		});
 	});
 }
 
@@ -223,7 +240,8 @@ bool compareDeep(Item first, Item second)
 	}
 }
 
-static std::function<void(void)> gNext;
+static std::function<void(void)>									gNext;
+static std::function<void(std::string, std::function<void(Item)>)>	gThrow = [](std::string msg, std::function<void(Item)> k){ puts(msg.c_str()); };
 
 void yield(std::function<void(void)> k)
 {
@@ -354,7 +372,7 @@ void eval_define(Item item, Context* context, std::function<void(Item)> k)
 	}
 	else
 	{
-		puts("&invalid-define");
+		gThrow("&invalid-define",k);
 	}
 }
 
@@ -381,7 +399,7 @@ void eval_proc(Item item, Context* context, std::function<void(Item)> k)
 	eval(car(item), context, [item, k, context](Item proc){
 		if (proc.type() != eProc)
 		{
-			puts("&did-not-eval-to-proc\n");
+			gThrow("&did-not-eval-to-proc\n",k);
 		}
 		else if (boost::any_cast<Proc>(proc).mNative)
 		{
@@ -585,7 +603,6 @@ void test_eval()
 	evals_to_symbol("(if 0 'true 'false)", "false");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 1)", "true");
 	evals_to_symbol("((lambda (x) (if x 'true 'false)) 0)", "false");
-	//evals_to_number("((lambda x x) 10 )", 10);
 	evals_to_number("( let ((x 5)) x )", 5);
 	evals_to_number("( let ((x 5) (y 2)) (+ x y ) )", 7);
 	evals_to_number("(let* ((x 5) (y x)) (+ x y) )", 10);
@@ -634,9 +651,6 @@ void test_context()
 												    "( f (+ 1 x)))))" 
 					  "(f 0))"
 					  , 10);
-
-	eval_same("10", "10");
-	eval_same("'10", "10");
 }
 
 void test_any()
